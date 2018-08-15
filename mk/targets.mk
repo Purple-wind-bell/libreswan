@@ -49,18 +49,10 @@ define recursive-target
 
   # Force recursion before running the local target.  While this is
   # what make systems like autoconf do, pluto was for a very long time
-  # doing the oposite - doing the recursion last.
+  # doing the opposite - doing the recursion last.
 
   $(1): recursive-$(1)
 	@$$(MAKE) --no-print-directory local-$(1)
-
-  # XXX: Require $(builddir)/Makefile.  Targets that switch to
-  # builddir require it (but are there any left?).  In $(topsrcdir)
-  # this will trigger a re-build of the Makefiles, in sub-directories
-  # this will simply barf.  It's assumed that $(OBJDIR) has been
-  # created by the time a subdir build has run.
-
-  $(1) local-$(1) recursive-$(1): $$(builddir)/Makefile
 
   recursive-$(1):
 	@set -eu $$(foreach subdir,$$(SUBDIRS),; $$(MAKE) -C $$(subdir) $$(patsubst recursive-%,%,$$@))

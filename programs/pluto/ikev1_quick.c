@@ -58,7 +58,7 @@
 #include "whack.h"
 #include "fetch.h"
 #include "asn1.h"
-
+#include "ikev1_send.h"
 #include "crypto.h"
 #include "secrets.h"
 
@@ -84,6 +84,17 @@
 #include "ip_address.h"
 
 #include <blapit.h>
+
+const struct oakley_group_desc *ikev1_quick_pfs(struct alg_info_esp *aie)
+{
+	if (aie == NULL) {
+		return NULL;
+	}
+	if (aie->ai.alg_info_cnt == 0) {
+		return NULL;
+	}
+	return aie->ai.proposals[0].dh;
+}
 
 /* accept_PFS_KE
  *
@@ -177,8 +188,12 @@ static void compute_proto_keymat(struct state *st,
 {
 	size_t needed_len = 0; /* bytes of keying material needed */
 
-	/* Add up the requirements for keying material
-	 * (It probably doesn't matter if we produce too much!)
+	/*
+	 * Add up the requirements for keying material (It probably
+	 * doesn't matter if we produce too much!)
+	 *
+	 * XXX: This entire switch can probably be reduced to just the
+	 * "default:" case.
 	 */
 	switch (protoid) {
 	case PROTO_IPSEC_ESP:
@@ -291,8 +306,8 @@ static void compute_proto_keymat(struct state *st,
 		/* ESP_SEED is for IKEv1 only and not supported. Its number in IKEv2 has been re-used */
 
 		default:
-			needed_len = kernel_alg_esp_enc_max_keylen(
-					pi->attrs.transattrs.ta_ikev1_encrypt);
+			/* bytes */
+			needed_len = encrypt_max_key_bit_length(pi->attrs.transattrs.ta_encrypt) / BITS_PER_BYTE;
 			if (needed_len > 0) {
 				/* XXX: check key_len coupling with kernel.c's */
 				if (pi->attrs.transattrs.enckeylen) {
@@ -600,7 +615,7 @@ static bool check_net_id(struct isakmp_ipsec_id *id,
 		subnettot(net, 0, subxmt, sizeof(subxmt));
 		subnettot(&net_temp, 0, subrec, sizeof(subrec));
 		loglog(RC_LOG_SERIOUS,
-		       "%s subnet returned doesn't match my proposal - us:%s vs them:%s",
+		       "%s subnet returned doesn't match my proposal - us: %s vs them: %s",
 		       which, subxmt, subrec);
 #ifdef ALLOW_MICROSOFT_BAD_PROPOSAL
 		loglog(RC_LOG_SERIOUS,
@@ -612,7 +627,7 @@ static bool check_net_id(struct isakmp_ipsec_id *id,
 	}
 	if (*protoid != id->isaiid_protoid) {
 		loglog(RC_LOG_SERIOUS,
-		       "%s peer returned protocol id does not match my proposal - us%d vs them: %d",
+		       "%s peer returned protocol id does not match my proposal - us: %d vs them: %d",
 		       which, *protoid, id->isaiid_protoid);
 #ifdef ALLOW_MICROSOFT_BAD_PROPOSAL
 		loglog(RC_LOG_SERIOUS,
@@ -628,7 +643,7 @@ static bool check_net_id(struct isakmp_ipsec_id *id,
 	 */
 	if (*port != id->isaiid_port) {
 		loglog(RC_LOG_SERIOUS,
-		       "%s peer returned port doesn't match my proposal - us:%d vs them:%d",
+		       "%s peer returned port doesn't match my proposal - us: %d vs them: %d",
 		       which, *port, id->isaiid_port);
 		if (*port != 0 && id->isaiid_port != 1701) {
 			loglog(RC_LOG_SERIOUS,
@@ -731,19 +746,16 @@ static stf_status quick_outI1_tail(struct pluto_crypto_req *r,
 
 static crypto_req_cont_func quick_outI1_continue;	/* type assertion */
 
-static void quick_outI1_continue(struct state *st, struct msg_digest *md UNUSED,
+static void quick_outI1_continue(struct state *st, struct msg_digest **mdp UNUSED,
 				 struct pluto_crypto_req *r)
 {
 	DBG(DBG_CONTROL,
 		DBG_log("quick_outI1_continue for #%lu: calculated ke+nonce, sending I1",
 			st->st_serialno));
 
+	pexpect(*mdp == NULL); /* no packet */
 	passert(st != NULL);
 	stf_status e = quick_outI1_tail(r, st);
-	/*
-	 * ??? this boilerplate code looks different from others.
-	 * Who frees md?
-	 */
 	if (e == STF_INTERNAL_ERROR) {
 		loglog(RC_LOG_SERIOUS,
 		       "%s: quick_outI1_tail() failed with STF_INTERNAL_ERROR",
@@ -762,7 +774,7 @@ void quick_outI1(int whack_sock,
 #endif
 		 )
 {
-	struct state *st = duplicate_state(isakmp_sa, TRUE);
+	struct state *st = ikev1_duplicate_state(isakmp_sa);
 	st->st_whack_sock = whack_sock;
 	st->st_connection = c;	/* safe: from duplicate_state */
 	passert(c != NULL);
@@ -796,7 +808,7 @@ void quick_outI1(int whack_sock,
 	if (policy & POLICY_PFS ) {
 		/*
 		 * Old code called ike_alg_pfsgroup() and that first
-		 * checked st->st_policy for POLICY_PFS.  Its assumed
+		 * checked st->st_policy for POLICY_PFS.  It's assumed
 		 * the check was redundant.
 		 */
 		pexpect((st->st_policy & POLICY_PFS));
@@ -805,8 +817,7 @@ void quick_outI1(int whack_sock,
 		 * use that group.
 		 * if not, fallback to old use-same-as-P1 behaviour
 		 */
-		st->st_pfs_group = child_dh(st->st_connection);
-
+		st->st_pfs_group = ikev1_quick_pfs(c->alg_info_esp);
 		/* otherwise, use the same group as during Phase 1:
 		 * since no negotiation is possible, we pick one that is
 		 * very likely supported.
@@ -840,11 +851,11 @@ void quick_outI1(int whack_sock,
 	st->st_ipsec_pred = replacing;
 
 	if (policy & POLICY_PFS) {
-		request_ke_and_nonce("quick_outI1 KE", st, NULL,
+		request_ke_and_nonce("quick_outI1 KE", st,
 				     st->st_pfs_group,
 				     quick_outI1_continue);
 	} else {
-		request_nonce("quick_outI1 KE", st, NULL,
+		request_nonce("quick_outI1 KE", st,
 			      quick_outI1_continue);
 	}
 	pop_cur_state(old_state);
@@ -860,8 +871,8 @@ static stf_status quick_outI1_tail(struct pluto_crypto_req *r,
 		*r_hashval,     /* where in reply to jam hash value */
 		*r_hash_start;  /* start of what is to be hashed */
 	bool has_client = c->spd.this.has_client || c->spd.that.has_client ||
-			  c->spd.this.protocol || c->spd.that.protocol ||
-			  c->spd.this.port || c->spd.that.port;
+			  c->spd.this.protocol != 0 || c->spd.that.protocol != 0 ||
+			  c->spd.this.port != 0 || c->spd.that.port != 0;
 
 	if (isakmp_sa == NULL) {
 		/* phase1 state got deleted while cryptohelper was working */
@@ -996,12 +1007,12 @@ static stf_status quick_outI1_tail(struct pluto_crypto_req *r,
 	init_phase2_iv(isakmp_sa, &st->st_msgid);
 	restore_new_iv(st, isakmp_sa->st_new_iv, isakmp_sa->st_new_iv_len);
 
-	if (!encrypt_message(&rbody, st)) {
+	if (!ikev1_encrypt_message(&rbody, st)) {
 		reset_cur_state();
 		return STF_INTERNAL_ERROR;
 	}
 
-	record_and_send_ike_msg(st, &reply_stream,
+	record_and_send_v1_ike_msg(st, &reply_stream,
 		"reply packet from quick_outI1");
 
 	delete_event(st);
@@ -1036,14 +1047,15 @@ static stf_status quick_outI1_tail(struct pluto_crypto_req *r,
  * - quick_inI1_outR1 starts the ball rolling.
  *   It checks and parses enough to learn the Phase 2 IDs
  *
- * - quick_inI1_outR1_authtail does the rest of the job
+ * - quick_inI1_outR1_tail does the rest of the job
+ *   XXX: why the function split?
  *
- * At the end of authtail, we have all the info we need, but we
+ * At the end of quick_inI1_outR1_tail, we have all the info we need, but we
  * haven't done any nonce generation or DH that we might need
  * to do, so that are two crypto continuations that do this work,
  * they are:
- *    quick_inI1_outR1_cryptocontinue1 -- called after NONCE/KE
- *    quick_inI1_outR1_cryptocontinue2 -- called after DH (if PFS)
+ *    quick_inI1_outR1_continue1 -- called after NONCE/KE
+ *    quick_inI1_outR1_continue2 -- called after DH (if PFS)
  *
  * we have to call nonce/ke and DH if we are doing PFS.
  */
@@ -1056,7 +1068,7 @@ struct p2id {
 };
 
 struct verify_oppo_bundle {
-	bool failure_ok;	/* if true, quick_inI1_outR1_authtail will try
+	bool failure_ok;	/* if true, quick_inI1_outR1_tail will try
 				 * other things on DNS failure
 				 */
 	struct msg_digest *md;
@@ -1066,7 +1078,7 @@ struct verify_oppo_bundle {
 	/* int whackfd; */	/* not needed because we are Responder */
 };
 
-static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b);
+static stf_status quick_inI1_outR1_tail(struct verify_oppo_bundle *b);
 
 stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 {
@@ -1192,20 +1204,19 @@ stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 	 * quick_inI1_outR1_start_query it saves a pointer to it before
 	 * a crypto (async op).
 	 */
-	return quick_inI1_outR1_authtail(&b);
+	return quick_inI1_outR1_tail(&b);
 }
 
 
 /* forward definitions */
-static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
-					      struct pluto_crypto_req *r);
+static stf_status quick_inI1_outR1_continue12_tail(struct msg_digest *md,
+						   struct pluto_crypto_req *r);
 
+static crypto_req_cont_func quick_inI1_outR1_continue1;	/* forward decl and type assertion */
 
-static crypto_req_cont_func quick_inI1_outR1_cryptocontinue1;	/* type assertion */
+static crypto_req_cont_func quick_inI1_outR1_continue2;	/* forward decl and type assertion */
 
-static crypto_req_cont_func quick_inI1_outR1_cryptocontinue2;	/* type assertion */
-
-static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b)
+static stf_status quick_inI1_outR1_tail(struct verify_oppo_bundle *b)
 {
 	struct msg_digest *md = b->md;
 	struct state *const p1st = md->st;
@@ -1371,7 +1382,7 @@ static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b)
 
 	/* now that we are sure of our connection, create our new state */
 	{
-		struct state *const st = duplicate_state(p1st, IPSEC_SA);
+		struct state *const st = ikev1_duplicate_state(p1st);
 
 		/* first: fill in missing bits of our new state object
 		 * note: we don't copy over st_peer_pubkey, the public key
@@ -1434,8 +1445,11 @@ static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b)
 			/* parse and accept body, setting variables, but not forming
 			 * our reply. We'll make up the reply later on.
 			 *
-			 * note that we process the copy of the pbs, so that
-			 * we can process it again in the cryptotail().
+			 * note that we process the copy of the pbs,
+			 * so that we can process it again in the
+			 * tail(). XXX: Huh, this is the tail
+			 * function!
+			 *
 			 */
 			st->st_pfs_group = &unset_group;
 			RETURN_STF_FAILURE(parse_ipsec_sa_body(&in_pbs,
@@ -1456,17 +1470,13 @@ static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b)
 
 		passert(st->st_connection != NULL);
 
-		/*
-		 * ??? this code did NOT have a set_suspended(st, md).
-		 * Now that is perfomed by new_pcrc.  Correct?
-		 */
 		if (st->st_pfs_group != NULL) {
-			request_ke_and_nonce("quick_outI1 KE", st, md,
+			request_ke_and_nonce("quick_outI1 KE", st,
 					     st->st_pfs_group,
-					     quick_inI1_outR1_cryptocontinue1);
+					     quick_inI1_outR1_continue1);
 		} else {
-			request_nonce("quick_outI1 KE", st, md,
-				      quick_inI1_outR1_cryptocontinue1);
+			request_nonce("quick_outI1 KE", st,
+				      quick_inI1_outR1_continue1);
 		}
 
 		passert(st->st_connection != NULL);
@@ -1474,10 +1484,9 @@ static stf_status quick_inI1_outR1_authtail(struct verify_oppo_bundle *b)
 	}
 }
 
-/* redundant type assertion: static crypto_req_cont_func quick_inI1_outR1_cryptocontinue1; */
-
-static void quick_inI1_outR1_cryptocontinue1(struct state *st, struct msg_digest *md,
-					     struct pluto_crypto_req *r)
+static void quick_inI1_outR1_continue1(struct state *st,
+				       struct msg_digest **mdp,
+				       struct pluto_crypto_req *r)
 {
 	DBG(DBG_CONTROL,
 		DBG_log("quick_inI1_outR1_cryptocontinue1 for #%lu: calculated ke+nonce, calculating DH",
@@ -1491,45 +1500,43 @@ static void quick_inI1_outR1_cryptocontinue1(struct state *st, struct msg_digest
 	if (st->st_pfs_group != NULL) {
 		/* PFS is on: do a new DH */
 		unpack_KE_from_helper(st, r, &st->st_gr);
-
-		struct pluto_crypto_req_cont *dh =
-			new_pcrc(quick_inI1_outR1_cryptocontinue2,
-				 "quick outR1 DH",
-				 st, md);
-		start_dh_secret(dh, st, ORIGINAL_RESPONDER,
-				st->st_pfs_group);
+		start_dh_v1_secret(quick_inI1_outR1_continue2, "quick outR1 DH",
+				   st, ORIGINAL_RESPONDER, st->st_pfs_group);
+		/*
+		 * XXX: Since more crypto has been requsted, MD needs
+		 * to be re suspended.  If the original crypto request
+		 * did everything this wouldn't be needed.
+		 */
+		suspend_md(st, mdp);
 	} else {
 		/* but if PFS is off, we don't do a second DH, so just
 		 * call the continuation with NULL struct pluto_crypto_req *
 		 */
-		stf_status e = quick_inI1_outR1_cryptotail(md, NULL);
+		stf_status e = quick_inI1_outR1_continue12_tail(*mdp, NULL);
 		if (e == STF_OK) {
-			passert(md != NULL);	/* ??? when would this fail? */
-			complete_v1_state_transition(&md, e);
-			release_any_md(&md);
+			passert(*mdp != NULL);	/* ??? when would this fail? */
+			complete_v1_state_transition(mdp, e);
 		}
 	}
 	/* ??? why does our caller not care about e? */
 }
 
-/* redundant type assertion: static crypto_req_cont_func quick_inI1_outR1_cryptocontinue2; */
-
-static void quick_inI1_outR1_cryptocontinue2(struct state *st, struct msg_digest *md,
-					     struct pluto_crypto_req *r)
+static void quick_inI1_outR1_continue2(struct state *st,
+				       struct msg_digest **mdp,
+				       struct pluto_crypto_req *r)
 {
 	DBG(DBG_CONTROL,
 		DBG_log("quick_inI1_outR1_cryptocontinue2 for #%lu: calculated DH, sending R1",
 			st->st_serialno));
 
 	passert(st->st_connection != NULL);
-	passert(md != NULL);
-	stf_status e = quick_inI1_outR1_cryptotail(md, r);
-	complete_v1_state_transition(&md, e);
-	release_any_md(&md);
+	passert(*mdp != NULL);
+	stf_status e = quick_inI1_outR1_continue12_tail(*mdp, r);
+	complete_v1_state_transition(mdp, e);
 }
 
-static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
-					      struct pluto_crypto_req *r)
+static stf_status quick_inI1_outR1_continue12_tail(struct msg_digest *md,
+						   struct pluto_crypto_req *r)
 {
 	struct state *st = md->st;
 	struct payload_digest *const id_pd = md->chain[ISAKMP_NEXT_ID];
@@ -1667,6 +1674,16 @@ static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
 
 	/* [ IDci, IDcr ] out */
 	if (id_pd != NULL) {
+		/*
+		 * We simply spit out the two ID payloads we got, raw!
+		 * We overwrite the Next Payload fields, raw!
+		 * This plays havoc with our nice previous_np backpatching.
+		 * At least these are the last payload, and not the first
+		 * so we can fudge by suppression.
+		 */
+		rbody.previous_np = NULL;	/* suppress check! */
+
+		/* IDci out */
 		struct isakmp_ipsec_id *p = (void *)rbody.cur; /* UGH! */
 
 		if (!out_raw(id_pd->pbs.start, pbs_room(&id_pd->pbs),
@@ -1675,6 +1692,7 @@ static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
 
 		p->isaiid_np = ISAKMP_NEXT_ID;
 
+		/* IDcr out */
 		p = (void *)rbody.cur; /* UGH! */
 
 		if (!out_raw(id_pd->next->pbs.start,
@@ -1702,7 +1720,7 @@ static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
 
 	/* encrypt message, except for fixed part of header */
 
-	if (!encrypt_message(&rbody, st)) {
+	if (!ikev1_encrypt_message(&rbody, st)) {
 		delete_ipsec_sa(st);
 		return STF_INTERNAL_ERROR; /* ??? we may be partly committed */
 	}
@@ -1717,10 +1735,10 @@ static stf_status quick_inI1_outR1_cryptotail(struct msg_digest *md,
  * (see RFC 2409 "IKE" 5.5)
  * Installs inbound and outbound IPsec SAs, routing, etc.
  */
-static stf_status quick_inR1_outI2_cryptotail(struct msg_digest *md,
-					      struct pluto_crypto_req *r);
+static stf_status quick_inR1_outI2_tail(struct msg_digest *md,
+					struct pluto_crypto_req *r);
 
-static crypto_req_cont_func quick_inR1_outI2_continue;	/* type assertion */
+static crypto_req_cont_func quick_inR1_outI2_continue;	/* forward decl and type assertion */
 
 stf_status quick_inR1_outI2(struct state *st, struct msg_digest *md)
 {
@@ -1749,36 +1767,30 @@ stf_status quick_inR1_outI2(struct state *st, struct msg_digest *md)
 
 	if (st->st_pfs_group != NULL) {
 		/* set up DH calculation */
-		struct pluto_crypto_req_cont *dh = new_pcrc(
-			quick_inR1_outI2_continue, "quick outI2 DH",
-			st, md);
-
-		start_dh_secret(dh, st, ORIGINAL_INITIATOR,
-				st->st_pfs_group);
+		start_dh_v1_secret(quick_inR1_outI2_continue, "quick outI2 DH",
+				   st, ORIGINAL_INITIATOR, st->st_pfs_group);
 		return STF_SUSPEND;
 	} else {
 		/* just call the tail function */
-		return quick_inR1_outI2_cryptotail(md, NULL);
+		return quick_inR1_outI2_tail(md, NULL);
 	}
 }
 
-/* redundant type assertion: static crypto_req_cont_func quick_inR1_outI2_continue; */
-
-static void quick_inR1_outI2_continue(struct state *st, struct msg_digest *md,
+static void quick_inR1_outI2_continue(struct state *st,
+				      struct msg_digest **mdp,
 				      struct pluto_crypto_req *r)
 {	DBG(DBG_CONTROL,
 		DBG_log("quick_inR1_outI2_continue for #%lu: calculated ke+nonce, calculating DH",
 			st->st_serialno));
 
 	passert(st->st_connection != NULL);
-	passert(md != NULL);
-	stf_status e = quick_inR1_outI2_cryptotail(md, r);
-	complete_v1_state_transition(&md, e);
-	release_any_md(&md);
+	passert(*mdp != NULL);
+	stf_status e = quick_inR1_outI2_tail(*mdp, r);
+	complete_v1_state_transition(mdp, e);
 }
 
-stf_status quick_inR1_outI2_cryptotail(struct msg_digest *md,
-				       struct pluto_crypto_req *r)
+stf_status quick_inR1_outI2_tail(struct msg_digest *md,
+				 struct pluto_crypto_req *r)
 {
 	struct state *st = md->st;
 	struct connection *c = st->st_connection;
@@ -1938,7 +1950,7 @@ stf_status quick_inR1_outI2_cryptotail(struct msg_digest *md,
 
 	/* encrypt message, except for fixed part of header */
 
-	if (!encrypt_message(&rbody, st)) {
+	if (!ikev1_encrypt_message(&rbody, st)) {
 		delete_ipsec_sa(st);
 		return STF_INTERNAL_ERROR; /* ??? we may be partly committed */
 	}

@@ -18,18 +18,14 @@
  * for more details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <libreswan.h>
-
-#include "constants.h"
-#include "lswlog.h"
 #include "libtwofish/twofish_cbc.h"
+#include "constants.h"		/* for BYTES_FOR_BITS() */
+#include "lswcdefs.h"		/* for UNUSED */
+#include "lswlog.h"
 #include "ike_alg.h"
-#include "ike_alg_twofish.h"
+#include "ike_alg_encrypt.h"
 #include "ietf_constants.h"
+#include "sadb.h"
 
 static void do_twofish(const struct encrypt_desc *alg UNUSED,
 		       u_int8_t *buf, size_t buf_size, PK11SymKey *key,
@@ -97,11 +93,17 @@ const struct encrypt_desc ike_alg_encrypt_twofish_cbc =
 		},
 	},
 	.enc_blocksize = TWOFISH_CBC_BLOCK_SIZE,
-	.pad_to_blocksize = TRUE,
+	.pad_to_blocksize = true,
 	.wire_iv_size = TWOFISH_CBC_BLOCK_SIZE,
 	.keydeflen = TWOFISH_KEY_DEF_LEN,
 	.key_bit_lengths = { 256, 192, 128, },
 	.encrypt_ops = &twofish_encrypt_ops,
+#ifdef SADB_X_EALG_TWOFISHCBC
+	.encrypt_sadb_ealg_id = SADB_X_EALG_TWOFISHCBC,
+#endif
+	.encrypt_netlink_xfrm_name = "twofish",
+	.encrypt_tcpdump_name = "twofish",
+	.encrypt_kernel_audit_name = "TWOFISH",
 };
 
 const struct encrypt_desc ike_alg_encrypt_twofish_ssh =
@@ -119,9 +121,11 @@ const struct encrypt_desc ike_alg_encrypt_twofish_ssh =
 		},
 	},
 	.enc_blocksize = TWOFISH_CBC_BLOCK_SIZE,
-	.pad_to_blocksize = TRUE,
+	.pad_to_blocksize = true,
 	.wire_iv_size = TWOFISH_CBC_BLOCK_SIZE,
 	.keydeflen = TWOFISH_KEY_DEF_LEN,
 	.key_bit_lengths = { 256, 192, 128, },
 	.encrypt_ops = &twofish_encrypt_ops,
+	.encrypt_tcpdump_name = "twofish_ssh", /* We don't know if this is right */
+	.encrypt_kernel_audit_name = "TWOFISH_SSH", /* We don't know if this is right */
 };

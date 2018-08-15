@@ -15,19 +15,10 @@
  * for more details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <sys/types.h>
-
-#include <libreswan.h>
-
-#include "constants.h"
-#include "lswlog.h"
 #include "ike_alg.h"
-
-#include "ike_alg_nss_cbc.h"
-#include "ike_alg_camellia.h"
+#include "ike_alg_encrypt.h"
+#include "ike_alg_encrypt_nss_cbc_ops.h"
+#include "sadb.h"
 
 /* Camellia is a drop-in replacement for AES */
 
@@ -50,7 +41,7 @@ typedef struct {
 	u_int32_t camellia_d_key[CAMELLIA_KS_LENGTH];     // the decryption key schedule
 } camellia_context;
 
-struct encrypt_desc ike_alg_encrypt_camellia_cbc =
+const struct encrypt_desc ike_alg_encrypt_camellia_cbc =
 {
 	.common = {
 		.name = "camellia",
@@ -68,14 +59,20 @@ struct encrypt_desc ike_alg_encrypt_camellia_cbc =
 		.mechanism = CKM_CAMELLIA_CBC,
 	},
 	.enc_blocksize = CAMELLIA_BLOCK_SIZE,
-	.pad_to_blocksize = TRUE,
+	.pad_to_blocksize = true,
 	.wire_iv_size =       CAMELLIA_BLOCK_SIZE,
 	.keydeflen =    CAMELLIA_KEY_DEF_LEN,
 	.key_bit_lengths = { 256, 192, 128, },
-	.encrypt_ops = &ike_alg_nss_cbc_encrypt_ops,
+	.encrypt_ops = &ike_alg_encrypt_nss_cbc_ops,
+#ifdef SADB_X_EALG_CAMELLIACBC
+	.encrypt_sadb_ealg_id = SADB_X_EALG_CAMELLIACBC,
+#endif
+	.encrypt_netlink_xfrm_name = "cbc(camellia)",
+	.encrypt_tcpdump_name = "camellia",
+	.encrypt_kernel_audit_name = "CAMELLIA",
 };
 
-struct encrypt_desc ike_alg_encrypt_camellia_ctr =
+const struct encrypt_desc ike_alg_encrypt_camellia_ctr =
 {
 	.common = {
 		.name = "camellia_ctr",
@@ -90,8 +87,10 @@ struct encrypt_desc ike_alg_encrypt_camellia_ctr =
 		},
 	},
 	.enc_blocksize = CAMELLIA_BLOCK_SIZE,
-	.pad_to_blocksize = FALSE,
+	.pad_to_blocksize = false,
 	.wire_iv_size =	CAMELLIA_BLOCK_SIZE,
 	.keydeflen =    CAMELLIA_KEY_DEF_LEN,
-	.key_bit_lengths = { 256, 192, 128, }
+	.key_bit_lengths = { 256, 192, 128, },
+	.encrypt_tcpdump_name = "camellia_ctr",
+	.encrypt_kernel_audit_name = "CAMELLIA_CTR",
 };

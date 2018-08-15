@@ -5,7 +5,7 @@ west #
  ../../pluto/bin/wait-until-alive -I 192.0.1.254 192.0.2.254
 destination -I 192.0.1.254 192.0.2.254 is alive
 west #
- # make sure that clear text does not get through
+ # ensure that clear text does not get through
 west #
  iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j LOGDROP
 west #
@@ -33,8 +33,8 @@ generating ID_PROT request 0 [ SA V V V V V ]
 sending packet: from 192.1.2.45[500] to 192.1.2.23[500] (XXX bytes)
 received packet: from 192.1.2.23[500] to 192.1.2.45[500] (XXX bytes)
 parsed ID_PROT response 0 [ SA V V V ]
-received DPD vendor ID
 received FRAGMENTATION vendor ID
+received DPD vendor ID
 received NAT-T (RFC 3947) vendor ID
 generating ID_PROT request 0 [ KE No NAT-D NAT-D ]
 sending packet: from 192.1.2.45[500] to 192.1.2.23[500] (XXX bytes)
@@ -67,7 +67,7 @@ west #
  echo done
 done
 west #
- if [ -f /var/run/pluto/pluto.pid ]; then ipsec look ; fi
+ if [ -f /var/run/pluto/pluto.pid ]; then ../../pluto/bin/ipsec-look.sh ; fi
 west #
  if [ -f /var/run/charon.pid ]; then strongswan statusall ; fi
 Status of IKE charon daemon (strongSwan VERSION):

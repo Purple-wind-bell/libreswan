@@ -47,6 +47,10 @@ include $(top_srcdir)/mk/config.mk
 
 OBJS =
 
+OBJS += send.o
+OBJS += ikev1_send.o
+OBJS += ikev2_send.o
+
 OBJS += state_db.o
 OBJS += show.o
 OBJS += retransmit.o
@@ -55,42 +59,31 @@ OBJS += retransmit.o
 ifeq ($(USE_XFRM_HEADER_COPY),true)
 CFLAGS+=-I ${LIBRESWANSRCDIR}/programs/pluto/linux-copy
 endif
+
+ifeq ($(USE_GLIBC_KERN_FLIP_HEADERS),true)
+CFLAGS+=-DGLIBC_KERN_FLIP_HEADERS
+endif
+
 # where to find klips headers and Libreswan headers
 HDRDIRS +=-I${LIBRESWANSRCDIR}/include -I$(LIBRESWANSRCDIR)/lib/libcrypto -I$(KLIPSINC)
-
-# -DKLIPS enables interface to Kernel LINUX IPsec code
-# -DNETKEY enables interface to Kernel NETKEY/XFRM IPsec code
-
-# The following are best left undefined -- each can be overridden at runtime
-# if need be.
-# -DPORT=n sets the default UDP port for IKE messages (otherwise 500)
 
 ifeq ($(USE_PFKEYv2),true)
 OBJS += kernel_pfkey.o
 endif
 
 ifeq ($(USE_NETKEY),true)
-CFLAGS += -DNETKEY_SUPPORT -DPFKEY
 OBJS += kernel_netlink.o
 endif
 
 ifeq ($(USE_KLIPS),true)
-CFLAGS += -DKLIPS -DPFKEY
 OBJS += kernel_klips.o
 endif
 
 ifeq ($(USE_MAST),true)
-CFLAGS += -DKLIPS_MAST
 OBJS += kernel_mast.o
 endif
 
-ifeq ($(USE_WIN2K_NATIVE),true)
-CFLAGS += -DWIN2K_NATIVE_IPSEC
-OBJS += kernel_win2k.o
-endif
-
 ifeq ($(USE_BSDKAME),true)
-CFLAGS += -DBSD_KAME
 OBJS += kernel_bsdkame.o
 # LIBBSDPFKEY is presumably passed in.
 LDFLAGS += ${LIBBSDPFKEY}
@@ -98,18 +91,23 @@ endif
 
 OBJS += x509.o
 OBJS += fetch.o
+OBJS += crl_queue.o
 
 ifeq ($(USE_IPSEC_CONNECTION_LIMIT),true)
 CFLAGS += -DIPSEC_CONNECTION_LIMIT=$(IPSEC_CONNECTION_LIMIT)
 endif
 
-OBJS += ikev1_xauth.o addresspool.o
-OBJS += $(call if-enabled, USE_XAUTHPAM, pam_conv.o)
+OBJS += addresspool.o
+
+# ikev1_xauth.c calls crypt(), link it in.
+OBJS += ikev1_xauth.o
+LDFLAGS += $(CRYPT_LDFLAGS)
+
+ifeq ($(USE_XAUTHPAM),true)
 OBJS += xauth.o
-LDFLAGS += $(XAUTHPAM_LDFLAGS)
-ifneq ($(BUILDENV), darwin)
-LDFLAGS += -lcrypt
+OBJS += pam_conv.o
 endif
+LDFLAGS += $(XAUTHPAM_LDFLAGS)
 
 OBJS += ikev1_aggr.o
 
@@ -132,32 +130,28 @@ ifeq ($(USE_UNBOUND_EVENT_H_COPY),true)
 CFLAGS+=-I${LIBRESWANSRCDIR}/include/unbound
 endif
 
-# XXX: hack until ike_alg gets a library
-OBJS += ike_info.o
+OBJS += ike_alg_dh_nss_ecp_ops.o
+OBJS += ike_alg_dh_nss_modp_ops.o
+OBJS += ike_alg_encrypt_nss_gcm_ops.o
+OBJS += ike_alg_hash_nss_ops.o
+OBJS += ike_alg_prf_hmac_ops.o
+OBJS += ike_alg_prf_nss_ops.o
+OBJS += ike_alg_prf_nss_xcbc_ops.o
 
-OBJS += ike_alg_nss_modp.o
-OBJS += ike_alg_nss_ecp.o
-OBJS += ike_alg_nss_cbc.o
-OBJS += ike_alg_nss_hash_ops.o
-OBJS += ike_alg_hmac_prf_ops.o
-OBJS += ike_alg_nss_prf_ops.o
-OBJS += ike_alg_nss_gcm.o
-OBJS += ike_alg.o db_ops.o
+OBJS += db_ops.o
 
 # libefence is a free memory allocation debugger
 # Solaris 2 needs -lsocket -lnsl
 LDFLAGS += $(SECCOMP_LDFLAGS)
+LDFLAGS += $(NSS_SMIME_LDFLAGS)
 LDFLAGS += $(NSS_LDFLAGS)
+LDFLAGS += $(NSPR_LDFLAGS)
 
 # For avoiding implicit DSO linking
 LDFLAGS += -lpthread
 
 LDFLAGS += $(FIPSCHECK_LDFLAGS)
-
-ifeq ($(USE_LIBCAP_NG),true)
-CFLAGS += -DHAVE_LIBCAP_NG
-LDFLAGS += -lcap-ng
-endif
+LDFLAGS += $(LIBCAP_NG_LDFLAGS)
 
 # OSDEP already set in objdir.mk?
 OSDEP?=$(shell uname -s | tr 'A-Z' 'a-z')
@@ -202,12 +196,14 @@ OBJS += connections.o initiate.o terminate.o
 OBJS += cbc_test_vectors.o
 OBJS += ctr_test_vectors.o
 OBJS += gcm_test_vectors.o
+OBJS += prf_test_vectors.o
 OBJS += test_buffer.o
 OBJS += pending.o cookie.o crypto.o defs.o
 OBJS += foodgroups.o log.o state.o plutomain.o plutoalg.o server.o
 OBJS += peerlog.o
 OBJS += hash_table.o list_entry.o
 OBJS += timer.o hmac.o hostpair.o
+OBJS += retry.o
 OBJS += myid.o ipsec_doi.o
 ifeq ($(USE_DNSSEC),true)
 OBJS += ikev2_ipseckey.o

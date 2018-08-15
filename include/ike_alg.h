@@ -1,20 +1,24 @@
 #ifndef _IKE_ALG_H
 #define _IKE_ALG_H
 
+#include <stdbool.h>	/* for bool */
 #include <nss.h>
 #include <pk11pub.h>
+#include "shunk.h"
+#include "ietf_constants.h"
 
 struct ike_alg;
+struct lswlog;
 enum ike_alg_key;
 
 /*
  * More meaningful passert.
  *
- * Do not wrap ASSERTION in parenthesis as it will suppress the
+ * Do not wrap ASSERTION in parentheses as it will suppress the
  * warning for 'foo = bar'.
  */
 #define passert_ike_alg(ALG, ASSERTION) {				\
-		/* wrapping ASSERTION in paren suppresses -Wparen */	\
+		/* wrapping ASSERTION in parens suppresses -Wparen */	\
 		bool assertion__ = ASSERTION; /* no paren */		\
 		if (!assertion__) {					\
 			PASSERT_FAIL("IKE_ALG %s algorithm '%s' fails: %s", \
@@ -26,7 +30,7 @@ enum ike_alg_key;
 	}
 
 #define pexpect_ike_alg(ALG, ASSERTION) {				\
-		/* wrapping ASSERTION in paren suppresses -Wparen */	\
+		/* wrapping ASSERTION in parens suppresses -Wparen */	\
 		bool assertion__ = ASSERTION; /* no paren */		\
 		if (!assertion__) {					\
 			PEXPECT_LOG("IKE_ALG %s algorithm '%s' fails: %s", \
@@ -34,6 +38,30 @@ enum ike_alg_key;
 				    (ALG)->fqn != NULL ? (ALG)->fqn	\
 				    : (ALG)->name != NULL ? (ALG)->name \
 				    : "NULL", #ASSERTION);		\
+		}							\
+	}
+
+#define pexpect_ike_alg_streq(ALG, LHS, RHS)				\
+	{								\
+		/* wrapping ASSERTION in parens suppresses -Wparen */	\
+		const char *lhs = LHS;					\
+		const char *rhs = RHS;					\
+		if (lhs == NULL || rhs == NULL || !streq(LHS, RHS)) {	\
+			PEXPECT_LOG("IKE_ALG %s algorithm '%s' fails: %s != %s (%s != %s)", \
+				    ike_alg_type_name((ALG)->algo_type), \
+				    (ALG)->fqn, lhs, rhs, #LHS, #RHS);	\
+		}							\
+	}
+
+#define pexpect_ike_alg_strcaseeq(ALG, LHS, RHS)			\
+	{								\
+		/* wrapping ASSERTION in parens suppresses -Wparen */	\
+		const char *lhs = LHS;					\
+		const char *rhs = RHS;					\
+		if (lhs == NULL || rhs == NULL || !strcaseeq(LHS, RHS)) { \
+			PEXPECT_LOG("IKE_ALG %s algorithm '%s' fails: %s != %s (%s != %s)", \
+				    ike_alg_type_name((ALG)->algo_type), \
+				    (ALG)->fqn, lhs, rhs, #RHS, #LHS);	\
 		}							\
 	}
 
@@ -89,9 +117,10 @@ const char *ike_alg_key_name(enum ike_alg_key key);
  * intended as a way to identify algorithms defined by IETF but not
  * supported here.
  */
-const struct ike_alg *ike_alg_byname(const struct ike_alg_type *type, const char *name);
+const struct ike_alg *ike_alg_byname(const struct ike_alg_type *type,
+				     shunk_t name);
 int ike_alg_enum_match(const struct ike_alg_type *type, enum ike_alg_key key,
-		       const char *name);
+		       shunk_t name);
 
 /*
  * Common prefix for struct encrypt_desc and struct hash_desc (struct
@@ -155,7 +184,7 @@ int ike_alg_enum_match(const struct ike_alg_type *type, enum ike_alg_key key,
  * suspect) SADB/KLIPS, the've gone off the rails.  Over time they've
  * picked up IKEv2 values making for general confusion.  Worse, as
  * noted above, CAMELLIA had the IKEv2 value 23 (IKEv1 is 22)
- * resulting in code never being sure if which it is dealing with.
+ * resulting in code never being sure of which it is dealing with.
  *
  * These values are not included in this table.
  *
@@ -163,16 +192,36 @@ int ike_alg_enum_match(const struct ike_alg_type *type, enum ike_alg_key key,
  * INTEG:    ipsec_authentication_algo  ah_transformid_names          AH
  *
  *
- * (not yet if ever) SADB / KLIPS:
+ * id[IKE_ALG_SADB_ID] aka SADB/PFKEY (never?):
  *
- * These values, which I suspect are used to interface with KLIPS,
- * seem to follow the original IKEv1 ESP/AH numbering (which means
- * that they almost but not quite match the mashed up values above).
+ * See: https://tools.ietf.org/html/rfc2367#page-12
  *
- * These values are not included in this table
+ * These values are used when interacting with the SADB/PFKEY kernel
+ * interface.  Any symbol named SADB_X_... indicates something local,
+ * either to this OS or this system.
  *
- * ENCRYPT:  sadb_ealg                  ?                             K_SADB*EALG
- * INTEG:    sadb_aalg                  ?                             K_SADB*AALG
+ * ENCRYPT:  (1)                       (2)                           SADB[_X]_AALG_
+ * INTEG:    (3)                       (4)                           SADB[_X]_EALG_
+ *
+ * (1) The linux centric header libreswan/pfkeyv2 tries to define the
+ *     enum sadb_ealg with the names K_SADB[_X]_AALG_... but the code
+ *     is broken - it doesn't accomodate missing algorithms (more
+ *     generally, the header defines all sorts of stuff that conflicts
+ *     with <net/pfkeyv2.h>)
+ *
+ * (2) Legacy broken code tries to use esp_transformid_names when
+ *     printing the encryption algorithm's name
+ *
+ * (3) The linux centric header libreswan/pfkeyv2 tries to define the
+ *     enum sadb_aalg with the names K_SADB[_X]_AALG_ but the code is
+ *     broken - it doesn't handle missing algorithms and (more
+ *     generally, the header defines all sorts of stuff that conflicts
+ *     with <net/pfkeyv2.h>)
+ *
+ * (4) Legacy code tries to map the integrity value onto
+ *     ikev1_auth_attribute and then use auth_alg_names to print the
+ *     name
+ *
  *
  * (not yet if ever) XFRM names:
  *
@@ -205,8 +254,8 @@ struct ike_alg {
 	 */
 	const char *names[5];
 	/*
-	 * Name that should be parsable by tcpdump -E.  It isn't clear
-	 * how true this is.  See ikev2.c:ikev2_log_parentSA().
+	 * XXX: name used in some (but not all) audit logs and other
+	 * random stuff.
 	 */
 	const char *const officname;
 
@@ -342,13 +391,44 @@ struct encrypt_desc {
 		CK_MECHANISM_TYPE mechanism;
 	} nss;
 
-	const struct encrypt_ops *encrypt_ops;
+	/*
+	 * This encryption algorithm's SADB (pfkeyv2) value (>0 when
+	 * defined for this OS).
+	 *
+	 * XXX: The linux centric header libreswan/pfkeyv2 tries to
+	 * define "enum sadb_ealg" with the names
+	 * K_SADB[_X]_EALG_... but the code is broken - it doesn't
+	 * accomodate missing algorithms.  Hence it is not used here.
+	 */
+	unsigned encrypt_sadb_ealg_id;
 
+	/*
+	 * This encryption algorithm's NETLINK_XFRM name, if known.
+	 */
+	const char *encrypt_netlink_xfrm_name;
+
+	/*
+	 * Name that should be parsable by tcpdump -E.  It isn't clear
+	 * how true this is.  See ikev2.c:ikev2_log_parentSA().
+	 */
+	const char *encrypt_tcpdump_name;
+
+	/*
+	 * Name used when generating a linux audit record for a child
+	 * / IPSEC / kernel SA.
+	 *
+	 * XXX: At one point this was the IKEv1 ESP enum_name table
+	 * but of course that required all kernel algorithms to have a
+	 * (probably bogus) IKEv1 name/number.
+	 */
+	const char *encrypt_kernel_audit_name;
+
+	const struct encrypt_ops *encrypt_ops;
 };
 
 struct encrypt_ops {
 	/*
-	 * Delegate responsiblity for checking OPS specific fields.
+	 * Delegate responsibility for checking OPS specific fields.
 	 */
 	void (*const check)(const struct encrypt_desc *alg);
 
@@ -419,18 +499,30 @@ struct hash_desc {
 };
 
 /*
+ * ASN.1 blobs specific to a particular hash algorithm are sent in the
+ * Auth payload as part of Digital signature authentication as per RFC7427
+ */
+struct asn1_hash_blob {
+	enum notify_payload_hash_algorithms hash_algo;
+	const uint8_t size;
+	const uint8_t *size_blob;
+	const uint8_t asn1_blob_len;
+	const uint8_t *asn1_blob;
+};
+
+/*
  * Generic implementation of HASH_DESC.
  */
 struct hash_context;
 
 struct hash_ops {
 	/*
-	 * Delegate responsiblity for checking OPS specific fields.
+	 * Delegate responsibility for checking OPS specific fields.
 	 */
 	void (*const check)(const struct hash_desc *alg);
 
 	struct hash_context *(*init)(const struct hash_desc *hash_desc,
-				     const char *name, lset_t debug);
+				     const char *name);
 	void (*digest_symkey)(struct hash_context *hash,
 			      const char *name, PK11SymKey *symkey);
 	void (*digest_bytes)(struct hash_context *hash,
@@ -440,7 +532,7 @@ struct hash_ops {
 			    u_int8_t *bytes, size_t sizeof_bytes);
 	/* FIPS short cuts */
 	PK11SymKey *(*symkey_to_symkey)(const struct hash_desc *hash_desc,
-					const char *name, lset_t debug,
+					const char *name,
 					const char *symkey_name, PK11SymKey *symkey);
 };
 
@@ -514,15 +606,15 @@ struct prf_desc {
 
 struct prf_ops {
 	/*
-	 * Delegate responsiblity for checking OPS specific fields.
+	 * Delegate responsibility for checking OPS specific fields.
 	 */
 	void (*const check)(const struct prf_desc *alg);
 
 	struct prf_context *(*init_symkey)(const struct prf_desc *prf_desc,
-					   const char *name, lset_t debug,
+					   const char *name,
 					   const char *key_name, PK11SymKey *key);
 	struct prf_context *(*init_bytes)(const struct prf_desc *prf_desc,
-					  const char *name, lset_t debug,
+					  const char *name,
 					  const char *key_name,
 					  const u_int8_t *bytes, size_t sizeof_bytes);
 	void (*digest_symkey)(struct prf_context *prf,
@@ -580,6 +672,38 @@ struct integ_desc {
 	enum ipsec_authentication_algo integ_ikev1_ah_transform;
 
 	/*
+	 * This integrity algorithm's SADB (pfkeyv2) value (>0 when
+	 * defined for this OS).
+	 *
+	 * The linux centric header libreswan/pfkeyv2 tries to define
+	 * "enum sadb_aalg" with the names K_SADB[_X]_AALG_... but the
+	 * code is broken - it doesn't accomodate missing algorithms.
+	 * Hence it is not used here.
+	 */
+	unsigned integ_sadb_aalg_id;
+
+	/*
+	 * This integrity algorithm's NETLINK_XFRM name if known.
+	 */
+	const char *integ_netlink_xfrm_name;
+
+	/*
+	 * Name that should be parsable by tcpdump -E.  It isn't clear
+	 * how true this is.  See ikev2.c:ikev2_log_parentSA().
+	 */
+	const char *integ_tcpdump_name;
+
+	/*
+	 * Name used when generating a linux audit record for a child
+	 * / IPSEC / kernel SA.
+	 *
+	 * XXX: At one point this was the IKEv1 ESP enum_name table
+	 * but of course that required all kernel algorithms to have a
+	 * (probably bogus) IKEv1 name/number.
+	 */
+	const char *integ_kernel_audit_name;
+
+	/*
 	 * For IKE.  The PRF implementing integrity.  The output is
 	 * truncated down to INTEG_HASH_LEN.
 	 *
@@ -593,17 +717,17 @@ struct integ_desc {
  * Associated Data)?
  *
  * Since AEAD algorithms have integrity built in, separate integrity
- * is redundant and rejected.
+ * is redundant.
  *
- * XXX: The converse (non-AEAD algorithm always require integrity) is
- * not true.  For instance, with ESP, integrity is optional.  Hence,
- * the old (reverse) test ike_alg_enc_requires_integ() should go away.
+ * Note that the converse (non-AEAD algorithm always require
+ * integrity) is not true.  For instance, with ESP, integrity is
+ * optional.
  */
 
-extern bool ike_alg_is_aead(const struct encrypt_desc *enc_desc);
-#define ike_alg_enc_requires_integ(ALG) (!ike_alg_is_aead(ALG))
+extern bool encrypt_desc_is_aead(const struct encrypt_desc *enc_desc);
 
-void ike_alg_init(void);
+void init_ike_alg(void);
+void test_ike_alg(void);
 
 /*
  * Iterate over all enabled algorithms.
@@ -627,6 +751,8 @@ bool ike_alg_is_valid(const struct ike_alg *alg);
 
 /*
  * Is the key valid for the encryption algorithm?
+ *
+ * For the case of null encryption, 0 is considered valid.
  */
 bool encrypt_has_key_bit_length(const struct encrypt_desc *encrypt_desc, unsigned keylen);
 
@@ -660,12 +786,12 @@ struct oakley_group_desc {
 	 */
 	SECOidTag nss_oid;
 
-	const struct dhmke_ops *dhmke_ops;
+	const struct dh_ops *dh_ops;
 };
 
-struct dhmke_ops {
+struct dh_ops {
 	/*
-	 * Delegate responsiblity for checking OPS specific fields.
+	 * Delegate responsibility for checking OPS specific fields.
 	 */
 	void (*const check)(const struct oakley_group_desc *alg);
 
@@ -743,14 +869,19 @@ const struct encrypt_desc *ikev1_get_kernel_encrypt_desc(enum ipsec_cipher_algo)
 const struct integ_desc *ikev1_get_kernel_integ_desc(enum ikev1_auth_attribute);
 
 /*
- * Pretty print the algorithm into a buffer as a string.  The string
- * format is formatted suitable for listing the algorithms in a wide
- * table.
+ * Find the ENCRYPT / INTEG algorithm using the SADB defined value.
  *
- * IKE_ALG_SNPRINT_BUFSIZE is a strong suggestion; internal code uses
- * a buffer that size when dumping all the algorithms during start up.
+ * Note that these functions take an unsigned and _not_ an enum
+ * parameter.  See above.
  */
-#define IKE_ALG_SNPRINT_BUFSIZ 120
-void ike_alg_snprint(char *buf, size_t sizeof_buf, const struct ike_alg *alg);
+
+const struct encrypt_desc *encrypt_desc_by_sadb_ealg_id(unsigned id);
+const struct integ_desc *integ_desc_by_sadb_aalg_id(unsigned id);
+
+/*
+ * Pretty print the algorithm into BUF.  The format is suitable for
+ * listing the algorithms in a very wide table.
+ */
+void lswlog_ike_alg(struct lswlog *buf, const struct ike_alg *alg);
 
 #endif /* _IKE_ALG_H */

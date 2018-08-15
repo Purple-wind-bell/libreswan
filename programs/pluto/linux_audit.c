@@ -59,7 +59,7 @@
 #include "timer.h"
 #include "kernel_alg.h"
 #include "ike_alg.h"
-#include "ike_alg_null.h"
+#include "ike_alg_integ.h"
 #include "plutoalg.h"
 /* for show_virtual_private: */
 #include "virtual.h"	/* needs connections.h */
@@ -67,12 +67,18 @@
 
 #include <libaudit.h>
 
-#ifndef NO_DB_OPS_STATS
-#define NO_DB_CONTEXT
 #include "db_ops.h"
-#endif
 
 #include "pluto_stats.h"
+
+#if __GNUC__ >= 7
+	/*
+	 * GCC 7+ warns about the following calls that truncate a string using
+	 * snprintf().  But here we are truncating the log message for a reason.
+	 */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
 
 static bool log_to_audit = FALSE;		/* audit log messages for kernel */
 
@@ -166,9 +172,9 @@ void linux_audit_conn(const struct state *st, enum linux_audit_kind op)
 	char head[IDTOA_BUF];
 	char integname[IDTOA_BUF];
 	char prfname[IDTOA_BUF];
-	struct esb_buf esb, esb2;
+	struct esb_buf esb;
 	/* we need to free() this */
-	char *conn_encode = audit_encode_nv_string("conn-name",c->name,0);
+	char *conn_encode = audit_encode_nv_string("conn-name", c->name,0);
 
 	zero(&cipher_str);	/* OK: no pointer fields */
 	zero(&spi_str);	/* OK: no pointer fields */
@@ -259,12 +265,10 @@ void linux_audit_conn(const struct state *st, enum linux_audit_kind op)
 		}
 		snprintf(cipher_str, sizeof(cipher_str), "cipher=%s ksize=%u integ=%s",
 			 (encrypt == NULL ? "none" :
-			  enum_show_shortb(&esp_transformid_names,
-					   encrypt->common.id[IKEv1_ESP_ID], &esb)),
+			  encrypt->encrypt_kernel_audit_name),
 			 enckeylen,
 			 (integ == NULL ? "none" :
-			  enum_show_shortb(&auth_alg_names,
-					   integ->common.id[IKEv1_ESP_ID], &esb2)));
+			  integ->integ_kernel_audit_name));
 
 		snprintf(spi_str, sizeof(spi_str),
 		"in-spi=%lu(0x%08lx) out-spi=%lu(0x%08lx) in-ipcomp=%lu(0x%08lx) out-ipcomp=%lu(0x%08lx)",
@@ -300,3 +304,6 @@ void linux_audit_conn(const struct state *st, enum linux_audit_kind op)
 			AUDIT_CRYPTO_IPSEC_SA : AUDIT_CRYPTO_IKE_SA,
 		audit_str, raddr, AUDIT_RESULT_OK);
 }
+#if __GNUC__ >= 7
+#pragma GCC diagnostic pop
+#endif

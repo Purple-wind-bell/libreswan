@@ -10,7 +10,7 @@
  * Copyright (C) 2010 David McCullough <david_mccullough@securecomputing.com>
  * Copyright (C) 2011 Mika Ilmaranta <ilmis@foobar.fi>
  * Copyright (C) 2012-2013 Paul Wouters <paul@libreswan.org>
- * Copyright (C) 2014-2017 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2014-2018 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2014-2017 Antony Antony <antony@phenome.org>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -36,6 +36,7 @@
 #include <arpa/inet.h>
 #include <resolv.h>
 #include <fcntl.h>
+#include <unistd.h>		/* for gethostname() */
 
 #include <libreswan.h>
 #include "libreswan/pfkeyv2.h"
@@ -72,7 +73,8 @@
 #include "server.h" /* for pluto_seccomp */
 #include "kernel_alg.h"
 #include "ike_alg.h"
-
+#include "ip_address.h" /* for setportof() */
+#include "crl_queue.h"
 #include "pluto_sd.h"
 
 #include "pluto_stats.h"
@@ -100,7 +102,7 @@ struct key_add_continuation {
 };
 
 static int whack_route_connection(struct connection *c,
-			__attribute__((unused)) void *arg)
+				  UNUSED void *arg)
 {
 	set_cur_connection(c);
 
@@ -117,7 +119,7 @@ static int whack_route_connection(struct connection *c,
 }
 
 static int whack_unroute_connection(struct connection *c,
-			__attribute__((unused)) void *arg)
+				    UNUSED void *arg)
 {
 	const struct spd_route *sr;
 	int fail = 0;
@@ -148,7 +150,7 @@ static void do_whacklisten(void)
 	fflush(stdout);
 	peerlog_close();    /* close any open per-peer logs */
 #ifdef USE_SYSTEMD_WATCHDOG
-        pluto_sd(PLUTO_SD_RELOADING, SD_REPORT_NO_STATUS);
+	pluto_sd(PLUTO_SD_RELOADING, SD_REPORT_NO_STATUS);
 #endif
 	libreswan_log("listening for IKE messages");
 	listening = TRUE;
@@ -156,7 +158,7 @@ static void do_whacklisten(void)
 	load_preshared_secrets();
 	load_groups();
 #ifdef USE_SYSTEMD_WATCHDOG
-        pluto_sd(PLUTO_SD_READY, SD_REPORT_NO_STATUS);
+	pluto_sd(PLUTO_SD_READY, SD_REPORT_NO_STATUS);
 #endif
 }
 
@@ -295,7 +297,7 @@ void whack_process(int whackfd, const struct whack_message *const m)
 				LSWDBGP(DBG_CONTROL, buf) {
 					lswlogs(buf, "old debugging ");
 					lswlog_enum_lset_short(buf, &debug_names,
-							        "+", old_debugging);
+							       "+", old_debugging);
 					lswlogs(buf, " + ");
 					lswlog_lmod(buf, &debug_names,
 						    "+", m->debugging);
@@ -464,7 +466,7 @@ void whack_process(int whackfd, const struct whack_message *const m)
 
 #if defined(LIBCURL) || defined(LIBLDAP)
 	if (m->whack_reread & REREAD_FETCH)
-			wake_fetch_thread("whack command");
+		add_crl_fetch_requests(NULL);
 #endif
 
 	if (m->whack_list & LIST_PSKS)
@@ -548,7 +550,6 @@ void whack_process(int whackfd, const struct whack_message *const m)
 					    dup_any(whackfd),
 					    m->debugging,
 					    m->impairing,
-					    pcim_demand_crypto,
 					    pass_remote ? m->remote_host : NULL);
 		}
 	}
@@ -559,7 +560,7 @@ void whack_process(int whackfd, const struct whack_message *const m)
 				  "need --listen before opportunistic initiation");
 		} else {
 			initiate_ondemand(&m->oppo_my_client,
-						&m->oppo_peer_client, 0,
+						&m->oppo_peer_client, m->oppo_proto,
 						FALSE,
 						m->whack_async ?
 						  NULL_FD :
@@ -584,7 +585,7 @@ void whack_process(int whackfd, const struct whack_message *const m)
 		clear_pluto_stats();
 
 	if (m->whack_traffic_status)
-		show_traffic_status();
+		show_traffic_status(m->name);
 
 	if (m->whack_shunt_status)
 		show_shunt_status();

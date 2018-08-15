@@ -23,6 +23,11 @@
 #include <net/if.h>
 
 #include "monotime.h"
+#include "reqid.h"
+#include "connections.h"	/* for policy_prio_t et.al. */
+
+struct sa_marks;
+struct spd_route;
 
 extern bool can_do_IPcomp;  /* can system actually perform IPCOMP? */
 extern reqid_t global_reqids;
@@ -147,6 +152,8 @@ struct kernel_sa {
 	 */
 };
 
+extern const struct kernel_sa empty_sa;	/* zero or null in all the right places */
+
 struct raw_iface {
 	ip_address addr;
 	char name[IFNAMSIZ + 20]; /* what would be a safe size? */
@@ -171,7 +178,6 @@ struct kernel_ops {
 	enum kernel_interface type;
 	const char *kern_name;
 	bool inbound_eroute;
-	bool policy_lifetime;
 	bool overlap_supported;
 	bool sha2_truncbug_support;
 	int replay_window;
@@ -183,6 +189,7 @@ struct kernel_ops {
 	void (*pfkey_register_response)(const struct sadb_msg *msg);
 	void (*process_queue)(void);
 	void (*process_msg)(int);
+	void (*scan_shunts)(void);
 	void (*set_debug)(int,
 			  libreswan_keying_debug_func_t debug_func,
 			  libreswan_keying_debug_func_t error_func);
@@ -237,6 +244,7 @@ struct kernel_ops {
 			  struct state *st);
 	void (*process_ifaces)(struct raw_iface *rifaces);
 	bool (*exceptsocket)(int socketfd, int family);
+	err_t (*migrate_sa_check)(void);
 	bool (*migrate_sa)(struct state *st);
 	bool (*v6holes)();
 };
@@ -358,6 +366,8 @@ extern void init_kernel(void);
 struct connection;      /* forward declaration of tag */
 extern bool trap_connection(struct connection *c);
 extern void unroute_connection(struct connection *c);
+extern void migration_up(struct connection *c,  struct state *st);
+extern void migration_down(struct connection *c,  struct state *st);
 
 extern bool has_bare_hold(const ip_address *src, const ip_address *dst,
 			  int transport_proto);
@@ -447,14 +457,6 @@ extern void expire_bare_shunts(void);
 extern void add_bare_shunt(const ip_subnet *ours, const ip_subnet *his,
 		int transport_proto, ipsec_spi_t shunt_spi,
 		const char *why);
-
-/*
- * Used to pass default priority from kernel_ops-> functions.
- * Our priority is based on an unsigned long int, with the
- * lower number being the highest priority, but this
- * might need to be translated depending on the IPsec stack.
- */
-#define DEFAULT_IPSEC_SA_PRIORITY 0
 
 // TEMPORARY
 extern bool raw_eroute(const ip_address *this_host,

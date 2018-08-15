@@ -15,7 +15,7 @@
  * Copyright (C) 2012 Philippe Vouters <Philippe.Vouters@laposte.net>
  * Copyright (C) 2012 Wes Hardaker <opensource@hardakers.net>
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
- * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2016, 2018 Andrew Cagney
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -31,38 +31,18 @@
 #include <pthread.h> /* Must be the first include file */
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <ctype.h>
 #include <errno.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <netinet/in.h>
-#include <resolv.h>
 
-#include <libreswan.h>
-
-#include <libreswan/pfkeyv2.h>
-#include <libreswan/pfkey.h>
-
-#include "sysdep.h"
-#include "constants.h"
 #include "lswconf.h"
 #include "lswfips.h"
 #include "lswnss.h"
 #include "defs.h"
-#include "id.h"
-#include "x509.h"
-#include "pluto_x509.h"
 #include "nss_ocsp.h"
-#include "certs.h"
-#include "connections.h"	/* needs id.h */
-#include "foodgroups.h"
-#include "packet.h"
-#include "demux.h"	/* needs packet.h */
 #include "server.h"
 #include "kernel.h"	/* needs connections.h */
 #include "log.h"
@@ -70,12 +50,8 @@
 #include "keys.h"
 #include "secrets.h"    /* for free_remembered_public_keys() */
 #include "rnd.h"
-#include "state.h"
-#include "ipsec_doi.h"	/* needs demux.h and state.h */
 #include "fetch.h"
-#include "timer.h"
 #include "ipsecconf/confread.h"
-#include "xauth.h"
 #include "crypto.h"
 #include "vendor.h"
 #include "pluto_crypt.h"
@@ -83,16 +59,11 @@
 #include "virtual.h"	/* needs connections.h */
 #include "state_db.h"	/* for init_state_db() */
 #include "nat_traversal.h"
-
-#include "cbc_test_vectors.h"
-#include "ctr_test_vectors.h"
+#include "ike_alg.h"
 
 #ifndef IPSECDIR
 #define IPSECDIR "/etc/ipsec.d"
 #endif
-
-#include <nss.h>
-#include <nspr.h>
 
 #ifdef HAVE_LIBCAP_NG
 # include <cap-ng.h>	/* from libcap-ng devel */
@@ -115,6 +86,7 @@ pthread_t main_thread;
 static char *rundir = NULL;
 char *pluto_listen = NULL;
 static bool fork_desired = USE_FORK || USE_DAEMON;
+static bool selftest_only = FALSE;
 
 #ifdef FIPS_CHECK
 # include <fipscheck.h> /* from fipscheck devel */
@@ -160,7 +132,7 @@ static void free_pluto_main(void)
  *
  * @param mess String - diagnostic message to print
  */
-static void invocation_fail(const char *mess)
+static void invocation_fail(err_t mess)
 {
 	if (mess != NULL)
 		fprintf(stderr, "%s\n", mess);
@@ -332,17 +304,28 @@ static void delete_lock(void)
  * FIXME: move them to confread_load() parameters
  */
 int verbose = 0;
-int warningsarefatal = 0;
 
 /* Read config file. exit() on error. */
 static struct starter_config *read_cfg_file(char *configfile)
 {
 	struct starter_config *cfg = NULL;
-	err_t err = NULL;
+	starter_errors_t errl = { NULL };
 
-	cfg = confread_load(configfile, &err, FALSE, NULL /* ctl_addr.sun_path? */, TRUE);
-	if (cfg == NULL)
-		invocation_fail(err);
+	cfg = confread_load(configfile, &errl, NULL /* ctl_addr.sun_path? */, TRUE);
+	if (cfg == NULL) {
+		/*
+		 * note: incovation_fail never returns so we will have
+		 * a leak of errl.errors
+		 */
+		invocation_fail(errl.errors);
+	}
+
+	if (errl.errors != NULL) {
+		fprintf(stderr, "pluto --config '%s', ignoring: %s\n",
+			configfile, errl.errors);
+		pfree(errl.errors);
+	}
+
 	return cfg;
 }
 
@@ -383,24 +366,24 @@ static void get_bsi_random(size_t nbytes, unsigned char *buf)
 	}
 
 	ndone = 0;
-		DBG(DBG_CONTROL,DBG_log("need %d bits random for extra seeding of the NSS PRNG",
+		DBG(DBG_CONTROL, DBG_log("need %d bits random for extra seeding of the NSS PRNG",
 			(int) nbytes * BITS_PER_BYTE));
 
 	while (ndone < nbytes) {
 		got = read(dev, buf + ndone, nbytes - ndone);
 		if (got < 0) {
-			loglog(RC_LOG_SERIOUS,"read error on %s (%s)\n",
+			loglog(RC_LOG_SERIOUS, "read error on %s (%s)\n",
 				device, strerror(errno));
 			exit_pluto(PLUTO_EXIT_NSS_FAIL);
 		}
 		if (got == 0) {
-			loglog(RC_LOG_SERIOUS,"EOF on %s!?!\n",  device);
+			loglog(RC_LOG_SERIOUS, "EOF on %s!?!\n",  device);
 			exit_pluto(PLUTO_EXIT_NSS_FAIL);
 		}
 		ndone += got;
 	}
 	close(dev);
-	DBG(DBG_CONTROL,DBG_log("read %zu bytes from /dev/random for NSS PRNG",
+	DBG(DBG_CONTROL, DBG_log("read %zu bytes from /dev/random for NSS PRNG",
 		nbytes));
 }
 
@@ -425,7 +408,7 @@ static bool pluto_init_nss(char *nssdir)
 	 */
 	if (pluto_nss_seedbits != 0) {
 		int seedbytes = BYTES_FOR_BITS(pluto_nss_seedbits);
-		unsigned char *buf = alloc_bytes(seedbytes,"TLA seedmix");
+		unsigned char *buf = alloc_bytes(seedbytes, "TLA seedmix");
 
 		get_bsi_random(seedbytes, buf); /* much TLA, very blocking */
 		rv = PK11_RandomUpdate(buf, seedbytes);
@@ -439,7 +422,7 @@ static bool pluto_init_nss(char *nssdir)
 }
 
 /* 0 is special and default: do not check crls dynamically */
-deltatime_t crl_check_interval = DELTATIME(0);
+deltatime_t crl_check_interval = DELTATIME_INIT(0);
 
 #ifdef HAVE_LABELED_IPSEC
 /*
@@ -581,6 +564,8 @@ static const struct option long_opts[] = {
 #endif
 	{ "vendorid\0<vendorid>", required_argument, NULL, 'V' },
 
+	{ "selftest\0", no_argument, NULL, '5' },
+
 	{ "leak-detective\0", no_argument, NULL, 'X' },
 	{ "debug-none\0^", no_argument, NULL, 'N' },
 	{ "debug-all\0", no_argument, NULL, 'A' },
@@ -705,7 +690,7 @@ int main(int argc, char **argv)
 	pluto_dnssec_rootfile = clone_str(DEFAULT_DNSSEC_ROOTKEY_FILE, "root.key file");
 #endif
 
-	deltatime_t keep_alive = DELTATIME(0);
+	deltatime_t keep_alive = DELTATIME_INIT(0);
 
 	/* Overridden by virtual_private= in ipsec.conf */
 	char *virtual_private = NULL;
@@ -1146,9 +1131,12 @@ int main(int argc, char **argv)
 			keep_alive = deltatime(u);
 			continue;
 
-		case '5':	/* --debug-nat-t aliases */
-			base_debugging |= DBG_NATT;
+		case '5':	/* --selftest */
+			selftest_only = TRUE;
+			log_to_stderr_desired = TRUE;
+			fork_desired = FALSE;
 			continue;
+
 		case '6':	/* --virtual-private */
 			virtual_private = clone_str(optarg, "virtual_private");
 			continue;
@@ -1209,7 +1197,11 @@ int main(int argc, char **argv)
 			crl_check_interval = deltatime(
 				cfg->setup.options[KBF_CRL_CHECKINTERVAL]);
 			uniqueIDs = cfg->setup.options[KBF_UNIQUEIDS];
+#ifdef USE_DNSSEC
 			do_dnssec = cfg->setup.options[KBF_DO_DNSSEC];
+#else
+			do_dnssec = FALSE;
+#endif
 			/*
 			 * We don't check interfaces= here because that part
 			 * has been dealt with in _stackmanager before we
@@ -1222,8 +1214,8 @@ int main(int argc, char **argv)
 			pluto_port = cfg->setup.options[KBF_IKEPORT];
 
 			/* --ike-socket-bufsize */
-                        pluto_sock_bufsize = cfg->setup.options[KBF_IKEBUF];
-                        pluto_sock_errqueue = cfg->setup.options[KBF_IKE_ERRQUEUE];
+			pluto_sock_bufsize = cfg->setup.options[KBF_IKEBUF];
+			pluto_sock_errqueue = cfg->setup.options[KBF_IKE_ERRQUEUE];
 
 			/* --nflog-all */
 			/* only causes nflog nmber to show in ipsec status */
@@ -1397,7 +1389,11 @@ int main(int argc, char **argv)
 	}
 
 	oco = lsw_init_options();
-	lockfd = create_lock();
+
+	if (!selftest_only)
+		lockfd = create_lock();
+	else
+		lockfd = 0;
 
 	/* select between logging methods */
 
@@ -1412,7 +1408,7 @@ int main(int argc, char **argv)
 	 * there will be no race condition in using it.  The easiest
 	 * place to do this is before the daemon fork.
 	 */
-	{
+	if (!selftest_only) {
 		err_t ugh = init_ctl_socket();
 
 		if (ugh != NULL) {
@@ -1476,6 +1472,7 @@ int main(int argc, char **argv)
 	} else {
 		/* no daemon fork: we have to fill in lock file */
 		(void) fill_lock(lockfd, getpid());
+
 		if (isatty(fileno(stdout))) {
 			fprintf(stdout, "Pluto initialized\n");
 			fflush(stdout);
@@ -1724,7 +1721,18 @@ int main(int argc, char **argv)
 	init_secret();
 	init_states();
 	init_connections();
-	init_crypto();
+	init_ike_alg();
+	test_ike_alg();
+
+	if (selftest_only) {
+		/*
+		 * skip pluto_exit()
+		 * Not all components were initialized and
+		 * no lock files were created.
+		 */
+		exit(PLUTO_EXIT_OK);
+	}
+
 	init_crypto_helpers(nhelpers);
 	init_demux();
 	init_kernel();
@@ -1750,6 +1758,8 @@ int main(int argc, char **argv)
 	return -1;	/* Shouldn't ever reach this */
 }
 
+volatile bool exiting_pluto = false;
+
 /*
  * leave pluto, with status.
  * Once child is launched, parent must not exit this way because
@@ -1761,6 +1771,17 @@ int main(int argc, char **argv)
  */
 void exit_pluto(int status)
 {
+	/*
+	 * Tell the world, well actually all the threads, that pluto
+	 * is exiting and they should quit.  Even if pthread_cancel()
+	 * weren't buggy, using it correctly would be hard, so use
+	 * this instead.
+	 *
+	 * XXX: All threads need to be told to quit before things like
+	 * NSS can be closed.  So a TODO is to join those threads.
+	 */
+	exiting_pluto = true;
+
 	/* needed because we may be called in odd state */
 	reset_globals();
  #ifdef USE_SYSTEMD_WATCHDOG
@@ -1834,20 +1855,16 @@ void show_setup_plutomain(void)
 
 	whack_log(RC_COMMENT,
 		"nhelpers=%d, uniqueids=%s, "
-#ifdef USE_DNSSEC
 		"dnssec-enable=%s, "
-#endif
 		"perpeerlog=%s, logappend=%s, logip=%s, shuntlifetime=%jds, xfrmlifetime=%jds",
 		nhelpers,
 		bool_str(uniqueIDs),
-#ifdef USE_DNSSEC
 		bool_str(do_dnssec),
-#endif
 		log_to_perpeer ? peerlog_basedir : "no",
 		bool_str(log_append),
 		bool_str(log_ip),
-                deltasecs(pluto_shunt_lifetime),
-                (intmax_t) pluto_xfrmlifetime
+		deltasecs(pluto_shunt_lifetime),
+		(intmax_t) pluto_xfrmlifetime
 	);
 
 	whack_log(RC_COMMENT,
@@ -1863,7 +1880,7 @@ void show_setup_plutomain(void)
 		pluto_sock_bufsize,
 		bool_str(pluto_sock_errqueue),
 		bool_str(crl_strict),
-                deltasecs(crl_check_interval),
+		deltasecs(crl_check_interval),
 		pluto_listen != NULL ? pluto_listen : "<any>",
 		pluto_nflog_group
 		);

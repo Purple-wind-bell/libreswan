@@ -34,7 +34,7 @@
 #include "demux.h"  /* needs packet.h */
 #include "rcv_whack.h"
 #include "whack.h"              /* for RC_LOG_SERIOUS */
-
+#include "ike_alg.h"
 #include "pluto_stats.h"
 
 unsigned long pstats_ipsec_sa;
@@ -42,26 +42,28 @@ unsigned long pstats_ikev1_sa;
 unsigned long pstats_ikev2_sa;
 unsigned long pstats_ikev1_fail;
 unsigned long pstats_ikev2_fail;
-unsigned long pstats_ikev1_encr[OAKLEY_CAMELLIA_CCM_C+1];
-unsigned long pstats_ikev2_encr[IKEv2_ENCR_ROOF];
-unsigned long pstats_ikev1_integ[OAKLEY_SHA2_512+1];
-unsigned long pstats_ikev2_integ[AUTH_ALGORITHM_ROOF];
-unsigned long pstats_ikev1_groups[OAKLEY_GROUP_ROOF];
-unsigned long pstats_ikev2_groups[OAKLEY_GROUP_ROOF];
-unsigned long pstats_invalidke_recv_s[OAKLEY_GROUP_ROOF];
-unsigned long pstats_invalidke_recv_u[OAKLEY_GROUP_ROOF];
-unsigned long pstats_invalidke_sent_s[OAKLEY_GROUP_ROOF];
-unsigned long pstats_invalidke_sent_u[OAKLEY_GROUP_ROOF];
-unsigned long pstats_ipsec_encr[IKEv2_ENCR_ROOF];	/* pretends everything maps 1 to 1 */
-unsigned long pstats_ipsec_integ[AUTH_ALGORITHM_ROOF];	/* pretends everything maps 1 to 1 */
+unsigned long pstats_ikev1_encr[OAKLEY_ENCR_PSTATS_ROOF];
+unsigned long pstats_ikev2_encr[IKEv2_ENCR_PSTATS_ROOF];
+unsigned long pstats_ikev1_integ[OAKLEY_HASH_PSTATS_ROOF];
+unsigned long pstats_ikev2_integ[IKEv2_AUTH_PSTATS_ROOF];
+unsigned long pstats_ikev1_groups[OAKLEY_GROUP_PSTATS_ROOF];
+unsigned long pstats_ikev2_groups[OAKLEY_GROUP_PSTATS_ROOF];
+unsigned long pstats_invalidke_recv_s[OAKLEY_GROUP_PSTATS_ROOF];
+unsigned long pstats_invalidke_recv_u[OAKLEY_GROUP_PSTATS_ROOF];
+unsigned long pstats_invalidke_sent_s[OAKLEY_GROUP_PSTATS_ROOF];
+unsigned long pstats_invalidke_sent_u[OAKLEY_GROUP_PSTATS_ROOF];
+
+unsigned long pstats_ikev1_ipsec_encrypt[ESP_PSTATS_ROOF];
+unsigned long pstats_ikev2_ipsec_encrypt[IKEv2_ENCR_PSTATS_ROOF];
+unsigned long pstats_ikev1_ipsec_integ[AUTH_ALGORITHM_PSTATS_ROOF];
+unsigned long pstats_ikev2_ipsec_integ[IKEv2_AUTH_PSTATS_ROOF];
+
 uint64_t pstats_ipsec_in_bytes;	/* total incoming IPsec traffic */
 uint64_t pstats_ipsec_out_bytes;	/* total outgoing IPsec traffic */
 unsigned long pstats_ike_in_bytes;	/* total incoming IPsec traffic */
 unsigned long pstats_ike_out_bytes;	/* total outgoing IPsec traffic */
-unsigned long pstats_ikev1_sent_notifies_e[v1N_ERROR_ROOF]; /* types of NOTIFY ERRORS */
-unsigned long pstats_ikev1_recv_notifies_e[v1N_ERROR_ROOF]; /* types of NOTIFY ERRORS */
-unsigned long pstats_ikev2_sent_notifies_e[v2N_ERROR_ROOF]; /* types of NOTIFY ERRORS */
-unsigned long pstats_ikev2_recv_notifies_e[v2N_ERROR_ROOF]; /* types of NOTIFY ERRORS */
+unsigned long pstats_ikev1_sent_notifies_e[v1N_ERROR_PSTATS_ROOF]; /* types of NOTIFY ERRORS */
+unsigned long pstats_ikev1_recv_notifies_e[v1N_ERROR_PSTATS_ROOF]; /* types of NOTIFY ERRORS */
 unsigned long pstats_ike_stf[10];	/* count state transitions */ /* ??? what is 10? */
 unsigned long pstats_ipsec_esp;
 unsigned long pstats_ipsec_ah;
@@ -77,18 +79,86 @@ unsigned long pstats_xauth_started;
 unsigned long pstats_xauth_stopped;
 unsigned long pstats_xauth_aborted;
 
-static void enum_stats(enum_names *en, unsigned long lwb, unsigned long upb, const char *what, unsigned long count[])
-{
-	for (unsigned long e = lwb; e <= upb; e++)
-	{
-		const char *nm = enum_short_name(en, e);
+#define PLUTO_STAT(TYPE, NAMES, WHAT, FLOOR, ROOF)			\
+	static unsigned long pstats_##TYPE##_count[ROOF-FLOOR +1/*overflow*/]; \
+	const struct pluto_stat pstats_##TYPE = {			\
+		.names = NAMES,						\
+		.what = WHAT,						\
+		.floor = FLOOR,						\
+		.roof = ROOF,						\
+		.count = pstats_##TYPE##_count,				\
+	};
 
+PLUTO_STAT(ikev2_sent_notifies_e, &ikev2_notify_names,
+	    "ikev2.sent.notifies.error",
+	    v2N_ERROR_FLOOR, v2N_ERROR_PSTATS_ROOF);
+PLUTO_STAT(ikev2_recv_notifies_e, &ikev2_notify_names,
+	   "ikev2.recv.notifies.error",
+	   v2N_ERROR_FLOOR, v2N_ERROR_PSTATS_ROOF);
+
+PLUTO_STAT(ikev2_sent_notifies_s, &ikev2_notify_names,
+	    "ikev2.sent.notifies.status",
+	   v2N_STATUS_FLOOR, v2N_STATUS_PSTATS_ROOF);
+PLUTO_STAT(ikev2_recv_notifies_s, &ikev2_notify_names,
+	   "ikev2.recv.notifies.status",
+	   v2N_STATUS_FLOOR, v2N_STATUS_PSTATS_ROOF);
+
+static void whack_pluto_stat(const struct pluto_stat *stat)
+{
+	unsigned long other = stat->count[stat->roof - stat->floor];
+	for (unsigned long e = stat->floor; e < stat->roof; e++)
+	{
+		const char *nm = enum_short_name(stat->names, e);
+		unsigned long count = stat->count[e - stat->floor];
 		/* not logging "UNUSED" */
-		if (nm != NULL && strstr(nm, "UNUSED") == NULL)
+		if (nm != NULL && strstr(nm, "UNUSED") == NULL) {
 			whack_log_comment("total.%s.%s=%lu",
-				what, nm, count[e]);
+					  stat->what, nm, count);
+		} else {
+			other += count;
+		}
+	}
+	whack_log_comment("total.%s.other=%lu",
+			  stat->what, other);
+}
+
+static void clear_pluto_stat(const struct pluto_stat *stat)
+{
+	memset(stat->count, 0, stat->roof - stat->floor + 1);
+}
+
+/*
+ * Some arrays start at 1, some start at 0, some start at ...
+ */
+static void enum_stats(enum_names *names, unsigned long start,
+		       unsigned long elemsof_count,
+		       const char *what, unsigned long count[])
+{
+	for (unsigned e = start; e < elemsof_count; e++) {
+		const char *name = enum_short_name(names, e);
+		/*
+		 * XXX: the bug is that the enum table contains names
+		 * that include UNUSED.  Skip them.
+		 */
+		if (name != NULL && strstr(name, "UNUSED") == NULL)
+			whack_log_comment("total.%s.%s=%lu",
+				what, name, count[e]);
 	}
 }
+#define ENUM_STATS(NAMES, START, WHAT, COUNT)	\
+	enum_stats(NAMES, START, elemsof(COUNT), WHAT, COUNT)
+
+#define IKE_ALG_STATS(WHAT, TYPE, ID, COUNT)				\
+	for (const struct TYPE##_desc **algp = next_##TYPE##_desc(NULL); \
+	     algp != NULL; algp = next_##TYPE##_desc(algp)) {		\
+		const struct TYPE##_desc *alg = *algp;			\
+		long id = alg->common.id[ID];				\
+		if (id >= 0 && id < (ssize_t) elemsof(COUNT)) {		\
+			whack_log_comment("total.%s.%s=%lu",		\
+					  WHAT, alg->common.fqn,	\
+					  COUNT[id]);			\
+		}							\
+	}
 
 void show_pluto_stats()
 {
@@ -122,18 +192,18 @@ void show_pluto_stats()
 	whack_log_comment("total.xauth.stopped=%lu", pstats_xauth_stopped);
 	whack_log_comment("total.xauth.aborted=%lu", pstats_xauth_aborted);
 
-	enum_stats(&oakley_enc_names, OAKLEY_3DES_CBC, OAKLEY_CAMELLIA_CCM_C, "ikev1.encr", pstats_ikev1_encr);
-	enum_stats(&oakley_hash_names, OAKLEY_MD5, OAKLEY_SHA2_512, "ikev1.integ", pstats_ikev1_integ);
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev1.group", pstats_ikev1_groups);
-	enum_stats(&ikev2_trans_type_encr_names, IKEv2_ENCR_3DES, IKEv2_ENCR_CHACHA20_POLY1305, "ikev2.encr", pstats_ikev2_encr);
-	enum_stats(&ikev2_trans_type_integ_names, IKEv2_AUTH_HMAC_MD5_96, IKEv2_AUTH_ROOF-1, "ikev2.integ", pstats_ikev2_integ);
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev2.group", pstats_ikev2_groups);
+	ENUM_STATS(&oakley_enc_names, OAKLEY_3DES_CBC, "ikev1.encr", pstats_ikev1_encr);
+	ENUM_STATS(&oakley_hash_names, OAKLEY_MD5, "ikev1.integ", pstats_ikev1_integ);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev1.group", pstats_ikev1_groups);
+	ENUM_STATS(&ikev2_trans_type_encr_names, IKEv2_ENCR_3DES, "ikev2.encr", pstats_ikev2_encr);
+	ENUM_STATS(&ikev2_trans_type_integ_names, IKEv2_AUTH_HMAC_MD5_96, "ikev2.integ", pstats_ikev2_integ);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev2.group", pstats_ikev2_groups);
 
 	/* we log the received invalid groups and the suggested valid groups */
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev2.recv.invalidke.using", pstats_invalidke_recv_u);
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev2.recv.invalidke.suggesting", pstats_invalidke_recv_s);
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev2.sent.invalidke.using", pstats_invalidke_sent_u);
-	enum_stats(&oakley_group_names, OAKLEY_GROUP_MODP768, OAKLEY_GROUP_ROOF-1, "ikev2.sent.invalidke.suggesting", pstats_invalidke_sent_s);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev2.recv.invalidke.using", pstats_invalidke_recv_u);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev2.recv.invalidke.suggesting", pstats_invalidke_recv_s);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev2.sent.invalidke.using", pstats_invalidke_sent_u);
+	ENUM_STATS(&oakley_group_names, OAKLEY_GROUP_MODP768, "ikev2.sent.invalidke.suggesting", pstats_invalidke_sent_s);
 
 #if 0
 	/* ??? THIS IS BROKEN (hint: array is wrong size (10)) */
@@ -144,13 +214,18 @@ void show_pluto_stats()
 	}
 #endif
 
-	/* IPsec ENCR maps to IKEv2 ENCR */
-	enum_stats(&ikev2_trans_type_encr_names, IKEv2_ENCR_3DES, IKEv2_ENCR_ROOF-1, "ipsec.encr", pstats_ipsec_encr);
-	enum_stats(&auth_alg_names, AUTH_ALGORITHM_HMAC_MD5, AUTH_ALGORITHM_ROOF-1, "ipsec.integ", pstats_ipsec_integ);
-	enum_stats(&ikev1_notify_names, 1, v1N_ERROR_ROOF-1, "ikev1.sent.notifies.error", pstats_ikev1_sent_notifies_e);
-	enum_stats(&ikev1_notify_names, 1, v1N_ERROR_ROOF-1, "ikev1.recv.notifies.error", pstats_ikev1_recv_notifies_e);
-	enum_stats(&ikev2_notify_names, 1, v2N_ERROR_ROOF-1, "ikev2.sent.notifies.error", pstats_ikev2_sent_notifies_e);
-	enum_stats(&ikev2_notify_names, 1, v2N_ERROR_ROOF-1, "ikev2.recv.notifies.error", pstats_ikev2_recv_notifies_e);
+	IKE_ALG_STATS("ikev1.ipsec.encr", encrypt, IKEv1_ESP_ID, pstats_ikev1_ipsec_encrypt);
+	IKE_ALG_STATS("ikev1.ipsec.integ", integ, IKEv1_ESP_ID, pstats_ikev1_ipsec_integ);
+	IKE_ALG_STATS("ikev2.ipsec.encr", encrypt, IKEv2_ALG_ID, pstats_ikev2_ipsec_encrypt);
+	IKE_ALG_STATS("ikev2.ipsec.integ", integ, IKEv2_ALG_ID, pstats_ikev2_ipsec_integ);
+
+	ENUM_STATS(&ikev1_notify_names, 1, "ikev1.sent.notifies.error", pstats_ikev1_sent_notifies_e);
+	ENUM_STATS(&ikev1_notify_names, 1, "ikev1.recv.notifies.error", pstats_ikev1_recv_notifies_e);
+
+	whack_pluto_stat(&pstats_ikev2_sent_notifies_e);
+	whack_pluto_stat(&pstats_ikev2_recv_notifies_e);
+	whack_pluto_stat(&pstats_ikev2_sent_notifies_s);
+	whack_pluto_stat(&pstats_ikev2_recv_notifies_s);
 }
 
 void clear_pluto_stats()
@@ -171,8 +246,10 @@ void clear_pluto_stats()
 	memset(pstats_ikev2_encr, 0, sizeof pstats_ikev2_encr);
 	memset(pstats_ikev1_integ, 0, sizeof pstats_ikev1_integ);
 	memset(pstats_ikev2_integ, 0, sizeof pstats_ikev2_integ);
-	memset(pstats_ipsec_encr, 0, sizeof pstats_ipsec_encr);
-	memset(pstats_ipsec_integ, 0, sizeof pstats_ipsec_integ);
+	memset(pstats_ikev1_ipsec_encrypt, 0, sizeof pstats_ikev1_ipsec_encrypt);
+	memset(pstats_ikev2_ipsec_encrypt, 0, sizeof pstats_ikev2_ipsec_encrypt);
+	memset(pstats_ikev1_ipsec_integ, 0, sizeof pstats_ikev1_ipsec_integ);
+	memset(pstats_ikev2_ipsec_integ, 0, sizeof pstats_ikev2_ipsec_integ);
 	memset(pstats_ikev1_groups, 0, sizeof pstats_ikev1_groups);
 	memset(pstats_ikev2_groups, 0, sizeof pstats_ikev2_groups);
 	memset(pstats_invalidke_sent_s, 0, sizeof pstats_invalidke_sent_s);
@@ -180,7 +257,9 @@ void clear_pluto_stats()
 	memset(pstats_invalidke_sent_u, 0, sizeof pstats_invalidke_sent_u);
 	memset(pstats_invalidke_recv_u, 0, sizeof pstats_invalidke_recv_u);
 	memset(pstats_ikev1_sent_notifies_e, 0, sizeof pstats_ikev1_sent_notifies_e);
-	memset(pstats_ikev2_sent_notifies_e, 0, sizeof pstats_ikev2_sent_notifies_e);
-	memset(pstats_ikev2_recv_notifies_e, 0, sizeof pstats_ikev2_recv_notifies_e);
+	clear_pluto_stat(&pstats_ikev2_sent_notifies_e);
+	clear_pluto_stat(&pstats_ikev2_recv_notifies_e);
+	clear_pluto_stat(&pstats_ikev2_sent_notifies_s);
+	clear_pluto_stat(&pstats_ikev2_recv_notifies_s);
 	memset(pstats_ikev1_recv_notifies_e, 0, sizeof pstats_ikev1_recv_notifies_e);
 }

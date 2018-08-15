@@ -7,7 +7,7 @@
  * Copyright (C) 2012-2013,2017 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2012 Avesh Agarwal <avagarwa@redhat.com>
  * Copyright (C) 2012-2013 D. Hugh Redelmeier <hugh@mimosa.com>
- * Copyright (C) 2015-2017 Andrew Cagney
+ * Copyright (C) 2015-2018 Andrew Cagney
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -54,12 +54,14 @@
 #include "alg_info.h"
 #include "kernel_alg.h"
 #include "ike_alg.h"
-#include "ike_alg_null.h"
+#include "ike_alg_integ.h"
+#include "ike_alg_dh.h"
 #include "db_ops.h"
 #include "demux.h"
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
 #include "rnd.h"
+#include "ikev2_send.h"		/* for build_ikev2_critical() */
 
 #include "nat_traversal.h"
 
@@ -111,6 +113,11 @@ struct ikev2_transform {
 	 */
 	unsigned attr_keylen;
 	/*
+	 * Marker to indicate that the transform was implied rather
+	 * than valid.
+	 */
+	bool implied;
+	/*
 	 * Marker to indicate that the transform is valid.  The first
 	 * invalid transform acts as a sentinel.
 	 *
@@ -146,11 +153,8 @@ struct ikev2_transforms {
 	     (TRANSFORM)++)
 
 struct ikev2_spi {
-	uint8_t bytes[8];
-	/*
-	 * Number of meaningful bytes in above.
-	 */
 	size_t size;
+	uint8_t bytes[COOKIE_SIZE>IPSEC_DOI_SPI_SIZE ? COOKIE_SIZE : IPSEC_DOI_SPI_SIZE];	/* space for largest SPI */
 };
 
 struct ikev2_proposal {
@@ -189,23 +193,32 @@ struct ikev2_proposal {
 struct ikev2_proposal_match {
 	/*
 	 * Set of local transform types to expect in the remote
-	 * proposal.  Because of INTEG=NULL some are OPTIONAL and some
-	 * are REQUIRED.
+	 * proposal.
+	 *
+	 * If the local proposal includes INTEG=NONE and/or DH=NONE
+	 * then including INTEG and/or DH transforms in the remote
+	 * proposal is OPTIONAL.  When the transform is missing, NONE
+	 * is implied.
 	 */
-	lset_t required_local_transform_types;
-	lset_t optional_local_transform_types;
+	lset_t required_transform_types;
+	lset_t optional_transform_types;
+	/*
+	 * Location of the sentinel transform for each transform type.
+	 * MATCHING_TRANSFORMS starts out with this value.
+	 */
+	struct ikev2_transform *sentinel_transform[IKEv2_TRANS_TYPE_ROOF];
 	/*
 	 * Set of transform types in the remote proposal that matched
 	 * at least one local transform of the same type.
 	 *
 	 * Note: MATCHED <= REQUIRED | OPTIONAL
 	 */
-	lset_t matched_local_transform_types;
+	lset_t matched_transform_types;
 	/*
 	 * Pointer to the best matched transform within the local
 	 * proposal, or the (invalid) sentinel transform.
 	 */
-	struct ikev2_transform *matching_transform[IKEv2_TRANS_TYPE_ROOF];
+	const struct ikev2_transform *matching_transform[IKEv2_TRANS_TYPE_ROOF];
 };
 
 struct ikev2_proposals {
@@ -261,11 +274,6 @@ struct ikev2_proposals {
 		     (PROPOSAL) = &(PROPOSALS)->proposal[(PROPNUM)];	\
 	     (PROPNUM) < (BOUND) && (PROPNUM) < (PROPOSALS)->roof;	\
 	     (PROPNUM)++, (PROPOSAL)++)
-
-static void print_name_value(struct lswlog *log, const char *name, int value)
-{
-	lswlogf(log, "%s(%d)", name, value);
-}
 
 /*
  * Print <TRANSFORM> to the buffer.
@@ -362,12 +370,12 @@ static void lswlog_chosen_proposal(struct lswlog *buf,
 {
 	lswlogs(buf, "proposal ");
 	print_proposal(buf, best_proposal->propnum, best_proposal);
-	lswlogs(buf, " chosen from: ");
+	lswlogs(buf, " chosen from remote proposals ");
 	lswlogl(buf, proposals);
 }
 
 void DBG_log_ikev2_proposal(const char *prefix,
-			    struct ikev2_proposal *proposal)
+			    const struct ikev2_proposal *proposal)
 {
 	LSWLOG_DEBUG(buf) {
 		lswlogf(buf, "%s ikev2_proposal: ", prefix);
@@ -375,7 +383,7 @@ void DBG_log_ikev2_proposal(const char *prefix,
 	}
 }
 
-static void print_proposals(struct lswlog *buf, struct ikev2_proposals *proposals)
+static void print_proposals(struct lswlog *buf, const struct ikev2_proposals *proposals)
 {
 	passert(proposals->proposal[0].protoid == 0);
 	const char *proposal_sep = "";
@@ -385,37 +393,6 @@ static void print_proposals(struct lswlog *buf, struct ikev2_proposals *proposal
 		lswlogs(buf, proposal_sep);
 		proposal_sep = " ";
 		print_proposal(buf, propnum, proposal);
-	}
-}
-
-void DBG_log_ikev2_proposals(const char *prefix,
-			     struct ikev2_proposals *proposals)
-{
-	DBG_log("%s ikev2_proposals:", prefix);
-	DBG_log("  allocation: %s", (proposals->on_heap ? "heap" : "static"));
-	passert(proposals->proposal[0].protoid == 0);
-	int propnum;
-	const struct ikev2_proposal *proposal;
-	FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
-		if (proposal->propnum != 0) {
-			DBG_log("  proposal: %d (%d)", propnum, proposal->propnum);
-		} else {
-			DBG_log("  proposal: %d", propnum);
-		}
-		LSWLOG_DEBUG(buf) {
-			lswlogf(buf, "    ");
-			lswlogs(buf, "protoid=");
-			print_name_value(buf, protoid_name(proposal->protoid),
-					 proposal->protoid);
-		}
-		enum ikev2_trans_type type;
-		const struct ikev2_transforms *transforms;
-		FOR_EACH_TRANSFORMS_TYPE(type, transforms, proposal) {
-			LSWLOG_DEBUG(buf) {
-				lswlogf(buf, "    ");
-				print_type_transforms(buf, type, transforms);
-			}
-		}
 	}
 }
 
@@ -437,7 +414,7 @@ void DBG_log_ikev2_proposals(const char *prefix,
 static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_buf,
 			      unsigned remote_propnum, int num_remote_transforms,
 			      enum ikev2_sec_proto_id remote_protoid,
-			      struct ikev2_proposals *local_proposals,
+			      const struct ikev2_proposals *local_proposals,
 			      const int local_propnum_base, const int local_propnum_bound,
 			      struct ikev2_proposal_match *matching_local_proposals)
 {
@@ -459,64 +436,18 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 	 */
 	{
 		int local_propnum;
-		struct ikev2_proposal *local_proposal;
+		const struct ikev2_proposal *local_proposal;
 		FOR_EACH_PROPOSAL_IN_RANGE(local_propnum, local_proposal, local_proposals,
 					   local_propnum_base, local_propnum_bound) {
 			struct ikev2_proposal_match *matching_local_proposal = &matching_local_proposals[local_propnum];
-			enum ikev2_trans_type type;
-			struct ikev2_transforms *local_transforms;
-			matching_local_proposal->required_local_transform_types = LEMPTY;
-			matching_local_proposal->matched_local_transform_types = LEMPTY;
-			matching_local_proposal->optional_local_transform_types = LEMPTY;
-			FOR_EACH_TRANSFORMS_TYPE(type, local_transforms, local_proposal) {
-				/*
-				 * Find the sentinel transform for
-				 * this transform-type.
-				 */
-				struct ikev2_transform *sentinel_transform;
-				FOR_EACH_TRANSFORM(sentinel_transform, local_transforms) {
-					/*
-					 * Since the local proposal
-					 * contains at least one
-					 * transform of this type, the
-					 * remote proposal is expected
-					 * to also contain at least
-					 * one of these transform
-					 * types.
-					 *
-					 * However, when the local
-					 * transform has INTEG=null,
-					 * exclude that from the
-					 * REQUIRED set, adding it to
-					 * the OPTIONAL - it is
-					 * optional.
-					 */
-					if (type == IKEv2_TRANS_TYPE_INTEG
-					    && sentinel_transform->id == 0) {
-						matching_local_proposal->optional_local_transform_types |= LELEM(type);
-					} else {
-						matching_local_proposal->required_local_transform_types |= LELEM(type);
-					}
-				}
-				passert(!sentinel_transform->valid);
-				/* a transform type can't be both */
-				passert(!(matching_local_proposal->required_local_transform_types & matching_local_proposal->optional_local_transform_types));
-				/* save the sentinel */
-				matching_local_proposal->matching_transform[type] = sentinel_transform;
-				DBG(DBG_CONTROLMORE,
-				    DBG_log("local proposal %d type %s has %td transforms",
-					    local_propnum, trans_type_name(type),
-					    sentinel_transform - local_transforms->transform));
-			}
-			LSWDBGP(DBG_CONTROLMORE, buf) {
-				lswlogf(buf, "local proposal %d transforms: required: ",
-					local_propnum);
-				lswlog_trans_types(buf, matching_local_proposal->
-						   required_local_transform_types);
-				lswlogf(buf, "; optional: ");
-				lswlog_trans_types(buf, matching_local_proposal->
-						   optional_local_transform_types);
-			}
+			/* clear matched */
+			matching_local_proposal->matched_transform_types = LEMPTY;
+			/* start with the sentinels */
+			passert(sizeof(matching_local_proposal->matching_transform) ==
+				sizeof(matching_local_proposal->sentinel_transform));
+			memcpy(matching_local_proposal->matching_transform,
+			       matching_local_proposal->sentinel_transform,
+			       sizeof(matching_local_proposal->sentinel_transform));
 		}
 	}
 
@@ -539,10 +470,10 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 
 	/*
 	 * Track the first integrity transform's transID.  Needed to
-	 * check for a mixup of NULL and non-NULL integrity
+	 * check for a mixup of NONE and non-NONE integrity
 	 * transforms.
 	 *
-	 * Since 0 (NULL) is a valid integrity transID value, start
+	 * Since 0 (NONE) is a valid integrity transID value, start
 	 * with -1.
 	 */
 	int first_integrity_transid = -1;
@@ -651,9 +582,9 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 				 * type that match.  Limit the search to
 				 * transforms before the last match.
 				 */
-				struct ikev2_transforms *local_transforms = &local_proposal->transforms[type];
+				const struct ikev2_transforms *local_transforms = &local_proposal->transforms[type];
 				struct ikev2_proposal_match *matching_local_proposal = &matching_local_proposals[local_propnum];
-				struct ikev2_transform **matching_local_transform = &matching_local_proposal->matching_transform[type];
+				const struct ikev2_transform **matching_local_transform = &matching_local_proposal->matching_transform[type];
 				/*
 				 * The matching local transform always
 				 * points into the local transform
@@ -666,7 +597,7 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 				/*
 				 * See if this match improves things.
 				 */
-				struct ikev2_transform *local_transform;
+				const struct ikev2_transform *local_transform;
 				FOR_EACH_TRANSFORM(local_transform, local_transforms) {
 					if (local_transform >= *matching_local_transform) {
 						break;
@@ -697,7 +628,7 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 						 * matched.
 						 */
 						matched_remote_transform_types |= LELEM(type);
-						matching_local_proposal->matched_local_transform_types |= LELEM(type);
+						matching_local_proposal->matched_transform_types |= LELEM(type);
 						break;
 					}
 				}
@@ -748,18 +679,20 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 				   local_propnum_base, local_propnum_bound) {
 		struct ikev2_proposal_match *matching_local_proposal = &matching_local_proposals[local_propnum];
 		LSWDBGP(DBG_CONTROLMORE, log) {
-			lswlogf(log, "comparing remote proposal %u and local proposal %d transforms: required: ",
-				remote_propnum, local_propnum);
+			lswlogf(log, "comparing remote proposal %u containing ",
+				remote_propnum);
+			lswlog_trans_types(log, proposed_remote_transform_types);
+			lswlogf(log, " transforms to local proposal %d",
+				local_propnum);
+			lswlogf(log, "; required: ");
 			lswlog_trans_types(log, matching_local_proposal->
-					   matched_local_transform_types);
+					   required_transform_types);
 			lswlogf(log, "; optional: ");
 			lswlog_trans_types(log, matching_local_proposal->
-					   required_local_transform_types);
-			lswlogf(log, "; proposed: ");
-			lswlog_trans_types(log, matching_local_proposal->
-					   optional_local_transform_types);
+					   optional_transform_types);
 			lswlogf(log, "; matched: ");
-			lswlog_trans_types(log, proposed_remote_transform_types);
+			lswlog_trans_types(log, matching_local_proposal->
+					   matched_transform_types);
 		}
 		/*
 		 * Using the set relationships:
@@ -777,7 +710,7 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 		 */
 		lset_t unmatched =
 			(proposed_remote_transform_types
-			 & ~matching_local_proposal->matched_local_transform_types);
+			 & ~matching_local_proposal->matched_transform_types);
 		/*
 		 *   missing = required_local - matched_local
 		 *
@@ -787,42 +720,42 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 		 *     Optional transforms are not included.
 		 */
 		lset_t missing =
-			(matching_local_proposal->required_local_transform_types
-			 & ~matching_local_proposal->matched_local_transform_types);
+			(matching_local_proposal->required_transform_types
+			 & ~matching_local_proposal->matched_transform_types);
 		/*
 		 * vis:
 		 *
-		 *         Local Proposal: ENCR=AEAD+INTEG=NULL
+		 *         Local Proposal: ENCR=AEAD+INTEG=NONE
 		 *     required_local = ENCR; optional_local = INTEG
 		 *     unmatched = proposed_remote - matched_local
 		 *     missing = ENCR - matched_local
 		 *
 		 *      Remote            Matched     Unmatched  Missing Accept
-		 *   INTEG=NULL           INTEG       -          ENCR
-		 *   INTEG!NULL           -           INTEG      ENCR
+		 *   INTEG=NONE           INTEG       -          ENCR
+		 *   INTEG!NONE           -           INTEG      ENCR
 		 *   ENCR=AEAD            ENCR        -          -       Yes
 		 *   ENCR!AEAD            -           ENCR       ENCR
-		 *   ENCR=AEAD+INTEG=NULL ENCR+INTEG  -          -       Yes
-		 *   ENCR!AEAD+INTEG=NULL INTEG       ENCR       ENCR
-		 *   ENCR=AEAD+INTEG!NULL ENCR        INTEG      -
-		 *   ENCR!AEAD+INTEG!NULL -           ENCR+INTEG ENCR
+		 *   ENCR=AEAD+INTEG=NONE ENCR+INTEG  -          -       Yes
+		 *   ENCR!AEAD+INTEG=NONE INTEG       ENCR       ENCR
+		 *   ENCR=AEAD+INTEG!NONE ENCR        INTEG      -
+		 *   ENCR!AEAD+INTEG!NONE -           ENCR+INTEG ENCR
 		 *   ENCR=AEAD+ESP=NO     ENCR        ESP        -
 		 *   ENCR!AEAD+ESP=NO     -           ESP+ENCR   ENCR
 		 *
-		 *          Local Proposal: ENCR!AEAD+INTEG!NULL
+		 *          Local Proposal: ENCR!AEAD+INTEG!NONE
 		 *     required_local = ENCR+INTEG; optional_local =
 		 *     unmatched = proposed_remote - matched_local
 		 *     missing = ENCR+INTEG - matched_local
 		 *
 		 *   Remote Proposal      Matched    Unmatched  Missing    Accept
-		 *   INTEG=NULL           -          INTEG      ENCR+INTEG
-		 *   INTEG!NULL           INTEG      -          ENCR
+		 *   INTEG=NONE           -          INTEG      ENCR+INTEG
+		 *   INTEG!NONE           INTEG      -          ENCR
 		 *   ENCR=AEAD            -          ENCR       ENCR+INTEG
 		 *   ENCR!AEAD            ENCR       -          INTEG
-		 *   ENCR=AEAD+INTEG=NULL -          ENCR+INTEG ENCR+INTEG
-		 *   ENCR!AEAD+INTEG=NULL ENCR       INTEG      INTEG
-		 *   ENCR=AEAD+INTEG!NULL INTEG      ENCR       ENCR
-		 *   ENCR!AEAD+INTEG!NULL ENCR+INTEG -          -          Yes
+		 *   ENCR=AEAD+INTEG=NONE -          ENCR+INTEG ENCR+INTEG
+		 *   ENCR!AEAD+INTEG=NONE ENCR       INTEG      INTEG
+		 *   ENCR=AEAD+INTEG!NONE INTEG      ENCR       ENCR
+		 *   ENCR!AEAD+INTEG!NONE ENCR+INTEG -          -          Yes
 		 *   ENCR=AEAD+ESP=NO     -          ENCR+ESP   ENCR+INTEG
 		 *   ENCR!AEAD+ESP=NO     ENCR       INTEG+ESP  INTEG
 		 */
@@ -850,10 +783,10 @@ static size_t proto_spi_size(enum ikev2_sec_proto_id protoid)
 {
 	switch (protoid) {
 	case IKEv2_SEC_PROTO_IKE:
-		return 8;
+		return COOKIE_SIZE;
 	case IKEv2_SEC_PROTO_AH:
 	case IKEv2_SEC_PROTO_ESP:
-		return 4;
+		return IPSEC_DOI_SPI_SIZE;
 	default:
 		return 0;
 	}
@@ -872,28 +805,101 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 				   bool expect_ike,
 				   bool expect_spi,
 				   bool expect_accepted,
-				   struct ikev2_proposals *local_proposals,
+				   const struct ikev2_proposals *local_proposals,
 				   struct ikev2_proposal *best_proposal,
 				   struct lswlog *remote_print_buf)
 {
 	/*
-	 * Array to track best proposals/transforms.
+	 * An array to track the best proposals/transforms found so
+	 * far.
+	 *
+	 * The MATCHING_LOCAL_PROPOSALS table contains one entry per
+	 * local proposal, and each entry contains a pointer best
+	 * matching transform, or the sentinel transform.
+	 *
+	 * The required, optional, and sentinal fields are initialized
+	 * here.  The remaining fields are initialized each time a
+	 * remote proposal is parsed.
 	 *
 	 * Must be freed.
 	 */
-	struct ikev2_proposal_match *matching_local_proposals;
-	matching_local_proposals = alloc_things(struct ikev2_proposal_match, local_proposals->roof,
-						"matching_local_proposals");
+	struct ikev2_proposal_match *matching_local_proposals =
+		alloc_things(struct ikev2_proposal_match, local_proposals->roof,
+			     "matching_local_proposals");
+	{
+		int local_propnum;
+		struct ikev2_proposal *local_proposal;
+		FOR_EACH_PROPOSAL(local_propnum, local_proposal, local_proposals) {
+			struct ikev2_proposal_match *matching_local_proposal = &matching_local_proposals[local_propnum];
+			enum ikev2_trans_type type;
+			struct ikev2_transforms *local_transforms;
+			lset_t all_transform_types = LEMPTY;
+			lset_t optional_transform_types = LEMPTY;
+			FOR_EACH_TRANSFORMS_TYPE(type, local_transforms, local_proposal) {
+				/*
+				 * Find the sentinel transform for
+				 * this transform-type.
+				 */
+				struct ikev2_transform *sentinel_transform;
+				FOR_EACH_TRANSFORM(sentinel_transform, local_transforms) {
+					all_transform_types |= LELEM(type);
+					/*
+					 * When INTEG=NONE and/or
+					 * DH=NONE is included in a
+					 * local proposal, the
+					 * transform is optional and,
+					 * when missing from a remote
+					 * proposal, NONE is implied.
+					 */
+					if ((type == IKEv2_TRANS_TYPE_INTEG &&
+					     sentinel_transform->id == IKEv2_AUTH_NONE) ||
+					    (type == IKEv2_TRANS_TYPE_DH &&
+					     sentinel_transform->id == OAKLEY_GROUP_NONE)) {
+						optional_transform_types |= LELEM(type);
+					}
+				}
+				/* save the sentinel */
+				passert(!sentinel_transform->valid);
+				matching_local_proposal->sentinel_transform[type] = sentinel_transform;
+				DBG(DBG_CONTROLMORE,
+				    DBG_log("local proposal %d type %s has %td transforms",
+					    local_propnum, trans_type_name(type),
+					    sentinel_transform - local_transforms->transform));
+			}
+			/*
+			 * A proposal's transform type can't be both
+			 * required an optional.
+			 *
+			 * Since a proposal containing DH=NONE +
+			 * DH=MODP2048 is valid, REQUIRED gets
+			 * computed (INTEG=NONE + INTEG=SHA1 isn't
+			 * valid but that should only happen when
+			 * impaired).
+			 */
+			matching_local_proposal->optional_transform_types = optional_transform_types;
+			matching_local_proposal->required_transform_types = all_transform_types & ~optional_transform_types;
+			LSWDBGP(DBG_CONTROLMORE, buf) {
+				lswlogf(buf, "local proposal %d transforms: required: ",
+					local_propnum);
+				lswlog_trans_types(buf, matching_local_proposal->
+						   required_transform_types);
+				lswlogf(buf, "; optional: ");
+				lswlog_trans_types(buf, matching_local_proposal->
+						   optional_transform_types);
+
+			}
+		}
+	}
 
 	/*
 	 * This loop contains no "return" statements.  Instead it
 	 * always enters at the top and exits at the bottom.  This
 	 * simplfies the dealing with buffers allocated above.
 	 *
-	 * On loop exit, the result is one of:
+	 * On loop exit, MATCHING_LOCAL_PROPNUM contains one of:
 	 *
 	 *    -ve - the STF_FAIL status
-         *    0: no proposal matched
+	 *    0: no proposal matched
 	 *    [1..LOCAL_PROPOSALS->ROOF): best match so far
 	 */
 	int matching_local_propnum = 0;
@@ -962,19 +968,30 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 		 * the IPsec protocol identifier for the current
 		 * negotiation.
 		 */
-		if (expect_ike && remote_proposal.isap_protoid != IKEv2_SEC_PROTO_IKE) {
-			libreswan_log("proposal %d has unexpected Protocol ID %d, expected IKE",
-				      remote_proposal.isap_propnum,
-				      (unsigned)remote_proposal.isap_protoid);
-			lswlogs(remote_print_buf, "[unexpected-protoid]");
-			continue;
+		if (expect_ike) {
+			if (remote_proposal.isap_protoid != IKEv2_SEC_PROTO_IKE) {
+				libreswan_log("proposal %d has unexpected Protocol ID %d; expected IKE",
+					      remote_proposal.isap_propnum,
+					      remote_proposal.isap_protoid);
+				lswlogs(remote_print_buf, "[unexpected-protoid]");
+				continue;
+			}
+		} else {
+			if (remote_proposal.isap_protoid != IKEv2_SEC_PROTO_AH &&
+			    remote_proposal.isap_protoid != IKEv2_SEC_PROTO_ESP) {
+				libreswan_log("proposal %d has unexpected Protocol ID %d; expected AH or ESP",
+					      remote_proposal.isap_propnum,
+					      remote_proposal.isap_protoid);
+				lswlogs(remote_print_buf, "[unexpected-protoid]");
+				continue;
+			}
 		}
 
 		/*
 		 * Validate the Security Parameter Index (SPI):
 		 *
-		 * RFC 7296: 3.3.1. Proposal Substructure: For an
-		 * initial IKE SA negotiation, this field MUST be
+		 * RFC 7296: 3.3.1. Proposal Substructure: SPI Size:
+		 * For an initial IKE SA negotiation, this field MUST be
 		 * zero; the SPI is obtained from the outer header.
 		 * During subsequent negotiations, it is equal to the
 		 * size, in octets, of the SPI of the corresponding
@@ -984,25 +1001,10 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 		struct ikev2_spi remote_spi = {
 			.size = (expect_spi ? proto_spi_size(remote_proposal.isap_protoid) : 0),
 		};
-		if (expect_spi && remote_spi.size == 0) {
-			libreswan_log("proposal %d has unrecognized Protocol ID %u; ignored",
-				      remote_proposal.isap_propnum,
-				      (unsigned)remote_proposal.isap_protoid);
-			lswlogs(remote_print_buf, "[unknown-protocol]");
-			continue;
-		}
-		if (remote_proposal.isap_spisize > sizeof(remote_spi.bytes)) {
-			libreswan_log("proposal %d has huge SPI size (%u); ignored",
-				      remote_proposal.isap_propnum,
-				      (unsigned)remote_proposal.isap_spisize);
-			lswlogs(remote_print_buf, "[spi-huge]");
-			/* best_local_proposal = -(STF_FAIL + v2N_INVALID_SYNTAX); */
-			continue;
-		}
 		if (remote_proposal.isap_spisize != remote_spi.size) {
-			libreswan_log("proposal %d has incorrect SPI size (%u), expected %zd; ignored",
+			libreswan_log("proposal %d has incorrect SPI size (%u), expected %zu; ignored",
 				      remote_proposal.isap_propnum,
-				      (unsigned)remote_proposal.isap_spisize,
+				      remote_proposal.isap_spisize,
 				      remote_spi.size);
 			lswlogs(remote_print_buf, "[spi-size]");
 			/* best_local_proposal = -(STF_FAIL + v2N_INVALID_SYNTAX); */
@@ -1062,17 +1064,47 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 				.protoid = remote_proposal.isap_protoid,
 				.remote_spi = remote_spi,
 			};
+			/*
+			 * store the matching transforms in the very
+			 * first transform entry of BEST_TRANSFORMS
+			 */
 			enum ikev2_trans_type type;
 			struct ikev2_transforms *best_transforms;
+			const struct ikev2_proposal_match *matching_local_proposal =
+				&matching_local_proposals[matching_local_propnum];
 			FOR_EACH_TRANSFORMS_TYPE(type, best_transforms, best_proposal) {
-				struct ikev2_transform *matching_transform = matching_local_proposals[matching_local_propnum].matching_transform[type];
+				const struct ikev2_transform *matching_transform = matching_local_proposal->matching_transform[type];
 				passert(matching_transform != NULL);
-				/*
-				 * This includes invalid (or
-				 * unmatched) transform types which is
-				 * ok.
-				 */
-				*best_transforms->transform = *matching_transform;
+				if (!matching_transform->valid &&
+				    LHAS(matching_local_proposal->optional_transform_types, type)) {
+					/*
+					 * DH=NONE and/or INTEG=NONE
+					 * is implied.
+					 */
+					unsigned id;
+					switch (type) {
+					case IKEv2_TRANS_TYPE_INTEG:
+						id = IKEv2_AUTH_NONE;
+						break;
+					case IKEv2_TRANS_TYPE_DH:
+						id = OAKLEY_GROUP_NONE;
+						break;
+					default:
+						bad_case(type);
+					}
+					best_transforms->transform[0] = (struct ikev2_transform) {
+						.id = id,
+						.valid = false,
+						.implied = true,
+					};
+				} else {
+					/*
+					 * When no match, this will
+					 * copy the sentinel transform
+					 * setting !valid.
+					 */
+					best_transforms->transform[0] = *matching_transform;
+				}
 			}
 		}
 	} while (remote_proposal.isap_lp == v2_PROPOSAL_NON_LAST);
@@ -1100,10 +1132,12 @@ stf_status ikev2_process_sa_payload(const char *what,
 				    bool expect_accepted,
 				    bool opportunistic,
 				    struct ikev2_proposal **chosen_proposal,
-				    struct ikev2_proposals *local_proposals)
+				    const struct ikev2_proposals *local_proposals)
 {
 	DBG(DBG_CONTROL, DBG_log("Comparing remote proposals against %s %d local proposals",
 				 what, local_proposals->roof - 1));
+
+	passert(*chosen_proposal == NULL);
 
 	/*
 	 * The chosen proposal.  If there was a match, and no errors,
@@ -1135,7 +1169,7 @@ stf_status ikev2_process_sa_payload(const char *what,
 			 * error reason will have already been logged.
 			 */
 			LSWLOG(buf) {
-				lswlogs(buf, "partial list of proposals:");
+				lswlogs(buf, "partial list of remote proposals: ");
 				lswlogl(buf, remote_print_buf);
 			}
 			status = -matching_local_propnum;
@@ -1143,13 +1177,13 @@ stf_status ikev2_process_sa_payload(const char *what,
 			/* no luck */
 			if (expect_accepted) {
 				LSWLOG(buf) {
-					lswlogs(buf, "accepted proposal invalid:");
+					lswlogs(buf, "remote accepted the invalid proposal ");
 					lswlogl(buf, remote_print_buf);
 				}
 				status = STF_FAIL;
 			} else {
 				LSWLOG(buf) {
-					lswlogs(buf, "no proposal chosen from:");
+					lswlogs(buf, "no local proposal matches remote proposals ");
 					lswlogl(buf, remote_print_buf);
 				}
 				status = STF_FAIL + v2N_NO_PROPOSAL_CHOSEN;
@@ -1159,9 +1193,8 @@ stf_status ikev2_process_sa_payload(const char *what,
 				pexpect(matching_local_propnum == best_proposal->propnum);
 				/* don't log on initiator's end - redundant */
 				LSWDBGP(DBG_CONTROL, buf) {
-					lswlogs(buf, "proposal ");
+					lswlogs(buf, "remote accepted the proposal ");
 					lswlogl(buf, remote_print_buf);
-					lswlogs(buf, " was accepted");
 				}
 			} else {
 				if (opportunistic) {
@@ -1187,12 +1220,18 @@ stf_status ikev2_process_sa_payload(const char *what,
 
 	pfreeany(best_proposal); /* only free if still owned by us */
 
+	if (status == STF_OK) {
+		passert(*chosen_proposal != NULL);
+	} else {
+		passert(*chosen_proposal == NULL);
+	}
+
 	return status;
 }
 
 static bool emit_transform(pb_stream *r_proposal_pbs,
 			   enum ikev2_trans_type type, bool last,
-			   struct ikev2_transform *transform)
+			   const struct ikev2_transform *transform)
 {
 	struct ikev2_trans trans = {
 		.isat_type = type,
@@ -1223,30 +1262,31 @@ static bool emit_transform(pb_stream *r_proposal_pbs,
  * It's assumed the caller knows what they are doing.  For instance
  * passing the correct value/size in for the SPI.
  */
-static bool emit_proposal(pb_stream *sa_pbs, struct ikev2_proposal *proposal,
-			  unsigned propnum, chunk_t *local_spi,
-			  enum ikev2_last_proposal last_proposal,
-			  bool exclude_integrity_none)
+static int walk_transforms(pb_stream *proposal_pbs, int nr_trans,
+			   const struct ikev2_proposal *proposal,
+			   unsigned propnum,
+			   bool exclude_transform_none)
 {
-	int numtrans = 0;
-	enum ikev2_trans_type type;
-	struct ikev2_transforms *transforms;
-
+	const char *what = proposal_pbs != NULL ? "emitting proposal" : "counting transforms";
 	/*
 	 * Total up the number of transforms that will go across the
 	 * wire.  Make allowance for INTEGRITY which might be
 	 * excluded.
 	 */
+	int trans_nr = 0;
+	enum ikev2_trans_type type;
+	const struct ikev2_transforms *transforms;
 	FOR_EACH_TRANSFORMS_TYPE(type, transforms, proposal) {
-		struct ikev2_transform *transform;
+		const struct ikev2_transform *transform;
 		FOR_EACH_TRANSFORM(transform, transforms) {
 			/*
 			 * When pluto initiates with an AEAD proposal,
-			 * integ=none is excluded (as recommended by
-			 * the RFC).  However, when pluto receives an
-			 * AEAD proposal that includes integ=none, the
-			 * it needs to include it (as also recommended
-			 * by the RFC?).
+			 * INTEG=NONE is excluded by default (as
+			 * recommended by the RFC).  However, when
+			 * pluto receives an AEAD proposal that
+			 * includes INTEG=NONE, it needs to include it
+			 * (as also recommended by the RFC?) in the
+			 * reply.
 			 *
 			 * The impair options then screw with this
 			 * behaviour - including or excluding
@@ -1255,18 +1295,65 @@ static bool emit_proposal(pb_stream *sa_pbs, struct ikev2_proposal *proposal,
 			if (type == IKEv2_TRANS_TYPE_INTEG &&
 			    transform->id == IKEv2_AUTH_NONE) {
 				if (DBGP(IMPAIR_IKEv2_INCLUDE_INTEG_NONE)) {
-					libreswan_log("IMPAIR: for proposal %d include integ=none in count",
-						      propnum);
+					libreswan_log("IMPAIR: proposal %d transform INTEG=NONE included when %s",
+						      propnum, what);
 				} else if (DBGP(IMPAIR_IKEv2_EXCLUDE_INTEG_NONE)) {
-					libreswan_log("IMPAIR: for proposal %d exclude integ=none in count",
-						      propnum);
+					libreswan_log("IMPAIR: proposal %d transform INTEG=NONE excluded when %s",
+						      propnum, what);
 					continue;
-				} else if (exclude_integrity_none) {
+				} else if (exclude_transform_none) {
+					DBGF(DBG_CONTROL, "discarding INTEG=NONE");
 					continue;
 				}
 			}
-			numtrans++;
+			/*
+			 * Since DH=NONE is omitted, don't include
+			 * it in the count.
+			 *
+			 * XXX: This logic only works when there is a
+			 * single DH=NONE transform.  While DH=NONE +
+			 * DH=MODP2048 is valid the below doesn't
+			 * handle it.
+			 */
+			if (type == IKEv2_TRANS_TYPE_DH &&
+			    transform->id == OAKLEY_GROUP_NONE) {
+				DBGF(DBG_CONTROL, "discarding DH=NONE");
+				continue;
+#if 0
+				if (DBGP(IMPAIR_IKEv2_INCLUDE_DH_NONE)) {
+					libreswan_log("IMPAIR: proposal %d transform DH=NONE included when %s",
+						      propnum, what);
+				} else if (DBGP(IMPAIR_IKEv2_EXCLUDE_DH_NONE)) {
+					libreswan_log("IMPAIR: proposal %d transform DH=NONE excluded when %s",
+						      propnum, what);
+					continue;
+				} else if (exclude_transform_none) {
+					continue;
+				}
+#endif
+			}
+
+			trans_nr++;
+			bool last = trans_nr == nr_trans;
+			if (proposal_pbs != NULL &&
+			    !emit_transform(proposal_pbs, type, last, transform))
+				return -1;
 		}
+	}
+	return trans_nr;
+}
+
+static bool emit_proposal(pb_stream *sa_pbs,
+			  const struct ikev2_proposal *proposal,
+			  unsigned propnum,
+			  const chunk_t *local_spi,
+			  enum ikev2_last_proposal last_proposal,
+			  bool exclude_transform_none)
+{
+	int numtrans = walk_transforms(NULL, -1, proposal, propnum,
+				       exclude_transform_none);
+	if (numtrans < 0) {
+		return false;
 	}
 
 	struct ikev2_prop prop = {
@@ -1279,7 +1366,7 @@ static bool emit_proposal(pb_stream *sa_pbs, struct ikev2_proposal *proposal,
 
 	pb_stream proposal_pbs;
 	if (!out_struct(&prop, &ikev2_prop_desc, sa_pbs, &proposal_pbs)) {
-		return FALSE;
+		return false;
 	}
 
 	if (local_spi != NULL) {
@@ -1289,38 +1376,18 @@ static bool emit_proposal(pb_stream *sa_pbs, struct ikev2_proposal *proposal,
 			return FALSE;
 	}
 
-	FOR_EACH_TRANSFORMS_TYPE(type, transforms, proposal) {
-		struct ikev2_transform *transform;
-		FOR_EACH_TRANSFORM(transform, transforms) {
-			/*
-			 * Since INTEG=NONE is omitted, don't include
-			 * it in the count.
-			 */
-			if (type == IKEv2_TRANS_TYPE_INTEG &&
-			    transform->id == IKEv2_AUTH_NONE) {
-				if (DBGP(IMPAIR_IKEv2_INCLUDE_INTEG_NONE)) {
-					libreswan_log("IMPAIR: for proposal %d include integ=none in payload",
-						      propnum);
-				} else if (DBGP(IMPAIR_IKEv2_EXCLUDE_INTEG_NONE)) {
-					libreswan_log("IMPAIR: for proposal %d exclude integ=none in payload",
-						      propnum);
-					continue;
-				} else if (exclude_integrity_none) {
-					continue;
-				}
-			}
-			bool last = --numtrans == 0;
-			if (!emit_transform(&proposal_pbs, type, last, transform))
-				return FALSE;
-		}
+	if (walk_transforms(&proposal_pbs, numtrans, proposal, propnum,
+			    exclude_transform_none) < 0) {
+		return false;
 	}
+
 	close_output_pbs(&proposal_pbs);
-	return TRUE;
+	return true;
 }
 
 bool ikev2_emit_sa_proposals(pb_stream *pbs,
-			     struct ikev2_proposals *proposals,
-			     chunk_t *local_spi,
+			     const struct ikev2_proposals *proposals,
+			     const chunk_t *local_spi,
 			     enum next_payload_types_ikev2 next_payload_type)
 {
 	DBG(DBG_CONTROL, DBG_log("Emitting ikev2_proposals ..."));
@@ -1328,18 +1395,14 @@ bool ikev2_emit_sa_proposals(pb_stream *pbs,
 	/* SA header out */
 	struct ikev2_sa sa = {
 		.isasa_np = next_payload_type,
-		.isasa_critical = ISAKMP_PAYLOAD_NONCRITICAL,
+		.isasa_critical = build_ikev2_critical(false),
 	};
-	if (DBGP(IMPAIR_SEND_BOGUS_PAYLOAD_FLAG)) {
-		libreswan_log(" setting bogus ISAKMP_PAYLOAD_LIBRESWAN_BOGUS flag in ISAKMP payload");
-		sa.isasa_critical |= ISAKMP_PAYLOAD_LIBRESWAN_BOGUS;
-	}
 	pb_stream sa_pbs;
 	if (!out_struct(&sa, &ikev2_sa_desc, pbs, &sa_pbs))
 		return FALSE;
 
 	int propnum;
-	struct ikev2_proposal *proposal;
+	const struct ikev2_proposal *proposal;
 	FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
 		if (!emit_proposal(&sa_pbs, proposal, propnum, local_spi,
 				   (propnum < proposals->roof - 1
@@ -1354,8 +1417,9 @@ bool ikev2_emit_sa_proposals(pb_stream *pbs,
 	return TRUE;
 }
 
-bool ikev2_emit_sa_proposal(pb_stream *pbs, struct ikev2_proposal *proposal,
-			    chunk_t *local_spi,
+bool ikev2_emit_sa_proposal(pb_stream *pbs,
+			    const struct ikev2_proposal *proposal,
+			    const chunk_t *local_spi,
 			    enum next_payload_types_ikev2 next_payload_type)
 {
 	DBG(DBG_CONTROL, DBG_log("Emitting ikev2_proposal ..."));
@@ -1380,15 +1444,10 @@ bool ikev2_emit_sa_proposal(pb_stream *pbs, struct ikev2_proposal *proposal,
 	return TRUE;
 }
 
-bool ikev2_proposal_to_trans_attrs(struct ikev2_proposal *proposal,
+bool ikev2_proposal_to_trans_attrs(const struct ikev2_proposal *proposal,
 				   struct trans_attrs *ta_out)
 {
 	DBG(DBG_CONTROL, DBG_log("converting proposal to internal trans attrs"));
-
-	/*
-	 * blank TA_OUT, and only update it on success.
-	 */
-	zero(ta_out);
 
 	/*
 	 * Start with an empty TA.
@@ -1397,12 +1456,21 @@ bool ikev2_proposal_to_trans_attrs(struct ikev2_proposal *proposal,
 		.ta_encrypt = NULL,
 	};
 
+	/*
+	 * blank TA_OUT, and only update it on success.
+	 */
+	*ta_out = ta;
+
 	enum ikev2_trans_type type;
-	struct ikev2_transforms *transforms;
+	const struct ikev2_transforms *transforms;
 	FOR_EACH_TRANSFORMS_TYPE(type, transforms, proposal) {
+		/*
+		 * Accepted transform is in [0] valid proposals would
+		 * be in [1...].
+		 */
 		pexpect(!transforms->transform[1].valid); /* zero or 1 */
-		if (transforms->transform[0].valid) {
-			struct ikev2_transform *transform = transforms->transform;
+		const struct ikev2_transform *transform = &transforms->transform[0];
+		if (transform->valid || transform->implied) {
 			switch (type) {
 			case IKEv2_TRANS_TYPE_ENCR: {
 				const struct encrypt_desc *encrypt =
@@ -1500,19 +1568,11 @@ bool ikev2_proposal_to_trans_attrs(struct ikev2_proposal *proposal,
 		}
 	}
 
-	/*
-	 * Patch up integrity.
-	 */
-	if (ike_alg_is_aead(ta.ta_encrypt) && ta.ta_integ == NULL) {
-		DBG(DBG_CONTROL, DBG_log("since AEAD, setting NULL integ to 'null'"));
-		ta.ta_integ = &ike_alg_integ_none;
-	}
-
 	*ta_out = ta;
 	return TRUE;
 }
 
-bool ikev2_proposal_to_proto_info(struct ikev2_proposal *proposal,
+bool ikev2_proposal_to_proto_info(const struct ikev2_proposal *proposal,
 				  struct ipsec_proto_info *proto_info)
 {
 	/*
@@ -1623,7 +1683,7 @@ static bool append_encrypt_transform(struct ikev2_proposal *proposal,
 	} else if (encrypt->keylen_omitted) {
 		/*
 		 * 3DES and NULL do not expect the key length
-		 * attribute - its redundant as there is only one
+		 * attribute - it's redundant as there is only one
 		 * valid key length.
 		 */
 		DBG(DBG_CONTROL, DBG_log("omitting IKEv2 %s %s ENCRYPT transform key-length",
@@ -1658,7 +1718,7 @@ static bool append_encrypt_transform(struct ikev2_proposal *proposal,
 		 * algorithm database for anything matching the
 		 * encryption algorithm and marked as a default.
 		 *
-		 * Also muddying the waters is ESP which proposes a
+		 * Also muddying the waters is ESP that proposes a
 		 * smaller key in preference to a larger one.
 		 *
 		 * If one of these keys turns out to be 0 or a
@@ -1704,7 +1764,7 @@ static bool append_encrypt_transform(struct ikev2_proposal *proposal,
 static struct ikev2_proposal *ikev2_proposal_from_proposal_info(const struct proposal_info *info,
 								enum ikev2_sec_proto_id protoid,
 								struct ikev2_proposals *proposals,
-								const struct oakley_group_desc *dh)
+								const struct oakley_group_desc *default_dh)
 {
 	/*
 	 * Both initialize and empty this proposal (might
@@ -1752,9 +1812,20 @@ static struct ikev2_proposal *ikev2_proposal_from_proposal_info(const struct pro
 
 	/*
 	 * DH.
+	 *
+	 * DEFAULT_DH==UNSET_DH signals that DH should be excluded (as
+	 * happens during the AUTH exchange).  Otherwise use either
+	 * the proposed or default DH.
 	 */
-	/* const struct oakley_group_desc *dh = info->dh; */
+	const struct oakley_group_desc *dh =
+		default_dh == &unset_group ? &ike_alg_dh_none
+		: info->dh != NULL ? info->dh
+		: default_dh;
 	if (dh != NULL) {
+		/*
+		 * WHILE DH=NONE is included in the proposal it is
+		 * omitted when emitted.
+		 */
 		append_transform(proposal, IKEv2_TRANS_TYPE_DH,
 				 dh->common.id[IKEv2_ALG_ID], 0);
 	}
@@ -1797,7 +1868,7 @@ static struct ikev2_proposal default_ikev2_ike_proposal[] = {
 	{ .protoid = 0, },	/* proposal 0 is ignored.  */
 	/*
 	 * AES_GCM_16/C[256]
-	 * NULL
+	 * NONE
 	 * SHA2_512, SHA2_256, SHA1 - SHA1 is MUST- in RFC 8247
 	 * MODP2048, MODP3072, MODP4096, MODP8192, DH_ECP256
 	 *
@@ -1814,9 +1885,9 @@ static struct ikev2_proposal default_ikev2_ike_proposal[] = {
 			[IKEv2_TRANS_TYPE_DH] = TR(DH_MODP2048, DH_MODP3072, DH_MODP4096, DH_MODP8192, DH_ECP256),
 		},
 	},
-        /*
+	/*
 	 * AES_GCM_16/C[128]
-	 * NULL
+	 * NONE
 	 * SHA2_512, SHA2_256, SHA1 - SHA1 is MUST- in RFC 8247
 	 * MODP2048, DH_MODP3072, MODP4096, MODP8192, DH_ECP256
 	 *
@@ -1833,7 +1904,7 @@ static struct ikev2_proposal default_ikev2_ike_proposal[] = {
 			[IKEv2_TRANS_TYPE_DH] = TR(DH_MODP2048, DH_MODP3072, DH_MODP4096, DH_MODP8192, DH_ECP256),
 		},
 	},
-        /*
+	/*
 	 * AES_CBC[256]
 	 * SHA2_512, SHA2_256, SHA1 - SHA1 is MUST- in RFC 8247
 	 * SHA2_512, SHA2_256, SHA1
@@ -1852,7 +1923,7 @@ static struct ikev2_proposal default_ikev2_ike_proposal[] = {
 			[IKEv2_TRANS_TYPE_DH] = TR(DH_MODP2048, DH_MODP3072, DH_MODP4096, DH_MODP8192, DH_ECP256),
 		},
 	},
-        /*
+	/*
 	 * AES_CBC[128]
 	 * SHA2_512, SHA2_256, SHA1 - SHA1 is MUST- in RFC 8247
 	 * SHA2_512, SHA2_256, SHA1 - SHA1 is MUST- in RFC 8247
@@ -1879,65 +1950,67 @@ static struct ikev2_proposals default_ikev2_ike_proposals = {
 };
 
 /*
- * Transform an alg_info_ike into an array of ikev2 proposals.
+ * Ensure c->ike_proposals is filled in.  If not, build it.
+ *
+ * ??? if c->ike_proposals was set for v1 we won't change it.
  *
  * WARNING: alg_info_ike is IKEv1
  *
  * If alg_info_ike includes unknown algorithms those get dropped,
  * which can lead to no proposals.
+ * c->ike_proposals will not be NULL (see passert).
  */
-void ikev2_proposals_from_alg_info_ike(const char *name, const char *what,
-				       struct alg_info_ike *alg_info_ike,
-				       struct ikev2_proposals **result)
-{
-	if (*result != NULL) {
-		DBG(DBG_CONTROL, DBG_log("already determined IKE proposals for %s", what));
+
+void ikev2_need_ike_proposals(struct connection *c, const char *why) {
+	if (c->ike_proposals != NULL) {
+		DBGF(DBG_CONTROL, "already determined local IKE proposals for %s (%s)",
+		     c->name, why);
 		return;
 	}
 
-	if (alg_info_ike == NULL) {
-		DBG(DBG_CONTROL, DBG_log("selecting default IKE proposals for %s", what));
-		*result = &default_ikev2_ike_proposals;
+	const char *notes;
+	if (c->alg_info_ike == NULL) {
+		DBGF(DBG_CONTROL, "selecting default local IKE proposals for %s (%s)",
+		     c->name, why);
+		c->ike_proposals = &default_ikev2_ike_proposals;
+		notes = " (default)";
+	} else {
+		DBGF(DBG_CONTROL, "constructing local IKE proposals for %s (%s)",
+		     c->name, why);
+		struct ikev2_proposals *proposals = alloc_thing(struct ikev2_proposals, "proposals");
+		int proposals_roof = c->alg_info_ike->ai.alg_info_cnt + 1;
+		proposals->proposal = alloc_things(struct ikev2_proposal, proposals_roof, "propsal");
+		proposals->on_heap = TRUE;
+		proposals->roof = 1;
 
-		LSWLOG(buf) {
-			lswlogf(buf, "%s IKE proposals for %s: ", name, what);
-			print_proposals(buf, *result);
-			lswlogf(buf, " (default)");
+		FOR_EACH_IKE_INFO(c->alg_info_ike, ike_info) {
+			LSWDBGP(DBG_CONTROL, buf) {
+				lswlogs(buf, "converting ike_info ");
+				lswlog_proposal_info(buf, ike_info);
+				lswlogs(buf, " to ikev2 ...");
+			}
+
+			passert(proposals->roof < proposals_roof);
+			struct ikev2_proposal *proposal =
+				ikev2_proposal_from_proposal_info(ike_info, IKEv2_SEC_PROTO_IKE,
+								  proposals, NULL);
+			if (proposal != NULL) {
+				DBG(DBG_CONTROL,
+				    DBG_log_ikev2_proposal("... ", proposal));
+				proposals->roof++;
+			}
 		}
-
-		return;
+		c->ike_proposals = proposals;
+		notes = "";
 	}
-
-	DBG(DBG_CONTROL, DBG_log("constructing IKE proposals for %s", what));
-	struct ikev2_proposals *proposals = alloc_thing(struct ikev2_proposals, "proposals");
-	int proposals_roof = alg_info_ike->ai.alg_info_cnt + 1;
-	proposals->proposal = alloc_things(struct ikev2_proposal, proposals_roof, "propsal");
-	proposals->on_heap = TRUE;
-	proposals->roof = 1;
-
-	FOR_EACH_IKE_INFO(alg_info_ike, ike_info) {
-		LSWDBGP(DBG_CONTROL, buf) {
-			lswlogs(buf, "converting ike_info ");
-			lswlog_proposal_info(buf, ike_info);
-			lswlogs(buf, " to ikev2 ...");
-		}
-
-		passert(proposals->roof < proposals_roof);
-		struct ikev2_proposal *proposal =
-			ikev2_proposal_from_proposal_info(ike_info, IKEv2_SEC_PROTO_IKE,
-							  proposals, ike_info->dh);
-		if (proposal != NULL) {
-			DBG(DBG_CONTROL,
-			    DBG_log_ikev2_proposal("... ", proposal));
-			proposals->roof++;
-		}
-	}
-	*result = proposals;
 
 	LSWLOG(buf) {
-		lswlogf(buf, "%s IKE proposals for %s: ", name, what);
-		print_proposals(buf, *result);
+		lswlogf(buf, "local IKE proposals for %s (%s): ",
+			c->name, why);
+		print_proposals(buf, c->ike_proposals);
+		lswlogs(buf, notes);
 	}
+	passert(c->ike_proposals != NULL);
 }
 
 static struct ikev2_proposal default_ikev2_esp_proposal_missing_esn[] = {
@@ -2027,28 +2100,21 @@ static void add_esn_transforms(struct ikev2_proposal *proposal, lset_t policy)
 	}
 }
 
-static void add_pfs_group_to_proposal(struct ikev2_proposal *proposal,
-		const struct oakley_group_desc *pfs_group)
+void ikev2_need_esp_or_ah_proposals(struct connection *c,
+				    const char *why,
+				    const struct oakley_group_desc *default_dh)
 {
-	if (pfs_group != NULL)
-		append_transform(proposal, IKEv2_TRANS_TYPE_DH, pfs_group->group, 0);
-}
-
-void ikev2_proposals_from_alg_info_esp(const char *name, const char *what,
-				       struct alg_info_esp *alg_info_esp,
-				       lset_t policy,
-				       const struct oakley_group_desc
-						*pfs_group,
-				       struct ikev2_proposals **result)
-{
-	if (*result != NULL) {
-		DBG(DBG_CONTROL, DBG_log("already determined ESP/AH proposals for %s", what));
+	if (c->esp_or_ah_proposals != NULL) {
+		DBGF(DBG_CONTROL, "already determined local ESP/AH proposals for %s (%s)",
+		     c->name, why);
 		return;
 	}
 
-	if (alg_info_esp == NULL) {
-		DBG(DBG_CONTROL, DBG_log("selecting default ESP/AH proposals for %s", what));
-		lset_t esp_ah = policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE);
+	const char *notes;
+	if (c->alg_info_esp == NULL) {
+		DBGF(DBG_CONTROL, "selecting default local ESP/AH proposals for %s (%s)",
+		     c->name, why);
+		lset_t esp_ah = c->policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE);
 		struct ikev2_proposals *default_proposals_missing_esn;
 		switch (esp_ah) {
 		case POLICY_ENCRYPT:
@@ -2062,8 +2128,18 @@ void ikev2_proposals_from_alg_info_esp(const char *name, const char *what,
 			 * For moment this function does not support
 			 * AH+ESP.  Assert the assumption.
 			 */
-			bad_case(policy);
+			bad_case(esp_ah);
 		}
+
+		/*
+		 * Should all the proposals be duplicated minus DH so
+		 * that an MSDH interop works? Not needed when PFS is
+		 * off and/or this is the AUTH exchange and DH is
+		 * excluded by &unset_group.
+		 */
+		bool add_empty_msdh_duplicates = (c->policy & POLICY_MSDH_DOWNGRADE) &&
+			default_dh != NULL && default_dh != &unset_group;
+
 		/*
 		 * Clone the default proposal and add the missing ESN.
 		 */
@@ -2071,83 +2147,137 @@ void ikev2_proposals_from_alg_info_esp(const char *name, const char *what,
 								"cloned ESP/AH proposals");
 		proposals->on_heap = TRUE;
 		proposals->roof = default_proposals_missing_esn->roof;
-		proposals->proposal = clone_bytes(default_proposals_missing_esn->proposal,
-						  sizeof(default_proposals_missing_esn->proposal[0]) * default_proposals_missing_esn->roof,
-						  "ESP/AH proposals");
+		if (add_empty_msdh_duplicates) {
+			/* add space for duplicates, minus the empty first proposal */
+			proposals->roof += default_proposals_missing_esn->roof - 1;
+		}
+		proposals->proposal = alloc_things(struct ikev2_proposal, proposals->roof,
+						   "ESP/AH proposals");
+		memcpy(proposals->proposal, default_proposals_missing_esn->proposal,
+		       sizeof(proposals->proposal[0]) * default_proposals_missing_esn->roof);
+		if (add_empty_msdh_duplicates) {
+			/*
+			 * Append duplicates but discarding
+			 * proposal[0] which is filler.
+			 */
+			memcpy(proposals->proposal + default_proposals_missing_esn->roof,
+			       default_proposals_missing_esn->proposal + 1, /* skip "0" */
+			       sizeof(proposals->proposal[0]) * (default_proposals_missing_esn->roof - 1));
+		}
 
 		int propnum;
 		struct ikev2_proposal *proposal;
 		FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
-			add_esn_transforms(proposal, policy);
-			add_pfs_group_to_proposal(proposal, pfs_group);
+			add_esn_transforms(proposal, c->policy);
 		}
-		*result = proposals;
-
-		LSWLOG(buf) {
-			lswlogf(buf, "%s ESP/AH proposals for %s: ", name, what);
-			print_proposals(buf, *result);
-			lswlogf(buf, " (default)");
+		if (default_dh != NULL && default_dh != &unset_group) {
+			DBGF(DBG_CONTROL, "adding dh %s to default proposals",
+			     default_dh->common.name);
+			FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
+				append_transform(proposal,
+						 IKEv2_TRANS_TYPE_DH,
+						 default_dh->group, 0);
+				if (propnum >= default_proposals_missing_esn->roof)
+					/* don't add to MSDH duplicates */
+					break;
+			}
 		}
+		c->esp_or_ah_proposals = proposals;
+		notes = " (default)";
+	} else {
 
-		return;
-	}
-
-	DBG(DBG_CONTROL, DBG_log("constructing ESP/AH proposals %sfor %s",
-				(pfs_group == NULL) ? "": "with pfsgroup ",
-				what));
-
-	struct ikev2_proposals *proposals = alloc_thing(struct ikev2_proposals, "proposals");
-	int proposals_roof = alg_info_esp->ai.alg_info_cnt + 1;
-	proposals->proposal = alloc_things(struct ikev2_proposal, proposals_roof, "propsal");
-	proposals->on_heap = TRUE;
-	proposals->roof = 1;
-
-	enum ikev2_sec_proto_id protoid;
-	switch (policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE)) {
-	case POLICY_ENCRYPT:
-		protoid = IKEv2_SEC_PROTO_ESP;
-		break;
-	case POLICY_AUTHENTICATE:
-		protoid = IKEv2_SEC_PROTO_AH;
-		break;
-	default:
-		bad_case(policy);
-	}
-
-	FOR_EACH_ESP_INFO(alg_info_esp, esp_info) {
-		LSWDBGP(DBG_CONTROL, log) {
-			lswlogf(log, "converting proposal ");
-			lswlog_proposal_info(log, esp_info);
-			lswlogf(log, " to ikev2 ...");
+		LSWDBGP(DBG_CONTROL, buf) {
+			lswlogs(buf, "constructing ESP/AH proposals with ");
+			if (default_dh == NULL) {
+				lswlogs(buf, "no default DH");
+			} else if (default_dh == &unset_group) {
+				lswlogs(buf, "all DH removed");
+			} else {
+				lswlogf(buf, "default DH %s", default_dh->common.name);
+			}
+			lswlogf(buf, "  for %s (%s)", c->name, why);
 		}
 
 		/*
-		 * Get the next proposal with the basics filled in.
+		 * If enabled, convert every proposal twice with the
+		 * second pass stripped of DH.
+		 *
+		 * Even when DEFAULT_DH is NULL, DH may be added
+		 * (found in alg-info).  Deal with that below.
 		 */
-		passert(proposals->roof < proposals_roof);
-		struct ikev2_proposal *proposal =
-			ikev2_proposal_from_proposal_info(esp_info, protoid,
-							  proposals, pfs_group);
-		if (proposal != NULL) {
-			add_esn_transforms(proposal, policy);
+		bool add_empty_msdh_duplicates = (c->policy & POLICY_MSDH_DOWNGRADE) &&
+			default_dh != &unset_group;
 
-			DBG(DBG_CONTROL,
-			    DBG_log_ikev2_proposal("... ", proposal));
-			proposals->roof++;
+		struct ikev2_proposals *proposals = alloc_thing(struct ikev2_proposals,
+								"ESP/AH proposals");
+		int proposals_roof = c->alg_info_esp->ai.alg_info_cnt + 1;
+		if (add_empty_msdh_duplicates) {
+			/* make space for everything duplicated */
+			proposals_roof += c->alg_info_esp->ai.alg_info_cnt;
 		}
-	}
+		proposals->proposal = alloc_things(struct ikev2_proposal, proposals_roof,
+						   "ESP/AH proposal");
+		proposals->on_heap = TRUE;
+		proposals->roof = 1;
 
-	*result = proposals;
+		enum ikev2_sec_proto_id protoid;
+		switch (c->policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE)) {
+		case POLICY_ENCRYPT:
+			protoid = IKEv2_SEC_PROTO_ESP;
+			break;
+		case POLICY_AUTHENTICATE:
+			protoid = IKEv2_SEC_PROTO_AH;
+			break;
+		default:
+			bad_case(c->policy);
+		}
+
+		for (int dup = 0; dup < (add_empty_msdh_duplicates ? 2 : 1); dup++) {
+			FOR_EACH_ESP_INFO(c->alg_info_esp, esp_info) {
+				LSWDBGP(DBG_CONTROL, log) {
+					lswlogf(log, "converting proposal ");
+					lswlog_proposal_info(log, esp_info);
+					lswlogf(log, " to ikev2 ...");
+				}
+
+				/*
+				 * Get the next proposal with the
+				 * basics filled in.
+				 */
+				passert(proposals->roof < proposals_roof);
+				if (dup && default_dh == NULL && esp_info->dh == NULL) {
+					/*
+					 * First pass didn't include DH.
+					 */
+					continue;
+				}
+				struct ikev2_proposal *proposal =
+					ikev2_proposal_from_proposal_info(esp_info, protoid,
+									  proposals,
+									  dup ? &unset_group : default_dh);
+				if (proposal != NULL) {
+					add_esn_transforms(proposal, c->policy);
+					DBG(DBG_CONTROL,
+					    DBG_log_ikev2_proposal("... ", proposal));
+					proposals->roof++;
+				}
+			}
+		}
+
+		c->esp_or_ah_proposals = proposals;
+		notes = "";
+	}
 
 	LSWLOG(buf) {
-		lswlogf(buf, "%s ESP/AH proposals for %s: ",
-			name, what);
-		print_proposals(buf, *result);
+		lswlogf(buf, "local ESP/AH proposals for %s (%s): ",
+			c->name, why);
+		print_proposals(buf, c->esp_or_ah_proposals);
+		lswlogs(buf, notes);
 	}
+	passert(c->esp_or_ah_proposals != NULL);
 }
 
-
-struct ipsec_proto_info *ikev2_esp_or_ah_proto_info(struct state *st, lset_t policy)
+struct ipsec_proto_info *ikev2_child_sa_proto_info(struct state *st, lset_t policy)
 {
 	/* ??? this code won't support AH + ESP */
 	switch (policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE)) {
@@ -2161,7 +2291,7 @@ struct ipsec_proto_info *ikev2_esp_or_ah_proto_info(struct state *st, lset_t pol
 	}
 }
 
-ipsec_spi_t ikev2_esp_or_ah_spi(const struct spd_route *spd_route, lset_t policy)
+ipsec_spi_t ikev2_child_sa_spi(const struct spd_route *spd_route, lset_t policy)
 {
 	int ipprotoid;
 	switch (policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE)) {
@@ -2180,14 +2310,14 @@ ipsec_spi_t ikev2_esp_or_ah_spi(const struct spd_route *spd_route, lset_t policy
 }
 
 /*
- * Return the first valid MODP proposal that is supported.
+ * Return the first valid DH proposal that is supported.
  */
-const struct oakley_group_desc *ikev2_proposals_first_modp(struct ikev2_proposals *proposals)
+const struct oakley_group_desc *ikev2_proposals_first_dh(const struct ikev2_proposals *proposals)
 {
 	int propnum;
-	struct ikev2_proposal *proposal;
+	const struct ikev2_proposal *proposal;
 	FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
-		struct ikev2_transforms *transforms = &proposal->transforms[IKEv2_TRANS_TYPE_DH];
+		const struct ikev2_transforms *transforms = &proposal->transforms[IKEv2_TRANS_TYPE_DH];
 		int t;
 		for (t = 0; t < transforms->transform[t].valid; t++) {
 			int groupnum = transforms->transform[t].id;
@@ -2200,18 +2330,15 @@ const struct oakley_group_desc *ikev2_proposals_first_modp(struct ikev2_proposal
 				 * rather than crash, continue looking
 				 * for a valid group.
 				 */
-				DBG(DBG_CONTROL, DBG_log("proposals include unsupported group %d", groupnum));
+				PEXPECT_LOG("proposals include unsupported group %d", groupnum);
+			} else if (group == &ike_alg_dh_none) {
+				DBGF(DBG_CONTROL, "ignoring DH=none when looking for first DH");
 			} else {
 				return group;
 			}
 		}
 	}
-	DBG(DBG_CONTROL, DBG_log("No valid MODP (DH) transform found"));
-	/* return something that should be supported.  */
-	const struct oakley_group_desc *group =
-		ikev2_get_dh_desc(OAKLEY_GROUP_MODP2048);
-	passert(group != NULL);
-	return group;
+	return NULL;
 }
 
 /*
@@ -2219,14 +2346,14 @@ const struct oakley_group_desc *ikev2_proposals_first_modp(struct ikev2_proposal
  *
  * It's the caller's problem to check that it is actually supported.
  */
-bool ikev2_proposals_include_modp(struct ikev2_proposals *proposals,
+bool ikev2_proposals_include_modp(const struct ikev2_proposals *proposals,
 				  oakley_group_t modp)
 {
 	int propnum;
-	struct ikev2_proposal *proposal;
+	const struct ikev2_proposal *proposal;
 	FOR_EACH_PROPOSAL(propnum, proposal, proposals) {
-		struct ikev2_transforms *transforms = &proposal->transforms[IKEv2_TRANS_TYPE_DH];
-		struct ikev2_transform *transform;
+		const struct ikev2_transforms *transforms = &proposal->transforms[IKEv2_TRANS_TYPE_DH];
+		const struct ikev2_transform *transform;
 		FOR_EACH_TRANSFORM(transform, transforms) {
 			if (transform->id == modp) {
 				return TRUE;
@@ -2237,10 +2364,10 @@ bool ikev2_proposals_include_modp(struct ikev2_proposals *proposals,
 	return FALSE;
 }
 
-void ikev2_copy_cookie_from_sa(struct state *st,
-		struct ikev2_proposal *accepted_ike_proposal)
+void ikev2_copy_cookie_from_sa(struct ikev2_proposal *accepted_ike_proposal,
+				u_int8_t *cookie)
 {
 	passert(accepted_ike_proposal->remote_spi.size == COOKIE_SIZE);
 	/* st_icookie is an array of len COOKIE_SIZE. only accept this length */
-	memcpy(st->st_icookie, accepted_ike_proposal->remote_spi.bytes, COOKIE_SIZE);
+	memcpy(cookie, accepted_ike_proposal->remote_spi.bytes, COOKIE_SIZE);
 }

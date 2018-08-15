@@ -10,11 +10,7 @@
  * for more details.
  */
 
-#include <stdio.h>
-#include <stdbool.h>
-
 #include "realtime.h"
-
 #include "lswlog.h"
 
 static const char *months[] = {

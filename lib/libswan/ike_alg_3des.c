@@ -14,22 +14,12 @@
  *
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <sys/types.h>
-
-#include <prerror.h>
-#include <prmem.h>
-#include <blapit.h>
-
-#include <libreswan.h>
-
-#include "constants.h"
-#include "lswlog.h"
+#include "constants.h"		/* for BYTES_FOR_BITS() */
+#include "ietf_constants.h"
 #include "ike_alg.h"
-#include "ike_alg_3des.h"
-#include "ike_alg_nss_cbc.h"
+#include "ike_alg_encrypt.h"
+#include "ike_alg_encrypt_nss_cbc_ops.h"
+#include "sadb.h"
 
 const struct encrypt_desc ike_alg_encrypt_3des_cbc =
 {
@@ -44,7 +34,7 @@ const struct encrypt_desc ike_alg_encrypt_3des_cbc =
 			[IKEv1_ESP_ID] = ESP_3DES,
 			[IKEv2_ALG_ID] = IKEv2_ENCR_3DES,
 		},
-		.fips =          TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.mechanism = CKM_DES3_CBC,
@@ -55,5 +45,11 @@ const struct encrypt_desc ike_alg_encrypt_3des_cbc =
 	.keylen_omitted = TRUE,
 	.keydeflen =        DES_CBC_BLOCK_SIZE * 3 * BITS_PER_BYTE,
 	.key_bit_lengths = { DES_CBC_BLOCK_SIZE * 3 * BITS_PER_BYTE, },
-	.encrypt_ops = &ike_alg_nss_cbc_encrypt_ops,
+	.encrypt_ops = &ike_alg_encrypt_nss_cbc_ops,
+#ifdef  SADB_EALG_3DESCBC
+	.encrypt_sadb_ealg_id = SADB_EALG_3DESCBC,
+#endif
+	.encrypt_netlink_xfrm_name = "des3_ede",
+	.encrypt_tcpdump_name = "3des",
+	.encrypt_kernel_audit_name = "3DES",
 };

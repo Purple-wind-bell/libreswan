@@ -24,8 +24,21 @@
 #define _WHACK_H
 
 #include "ietf_constants.h"
+#include "lset.h"
 #include "lmod.h"
 #include "deltatime.h"
+#include "chunk.h"
+#include "reqid.h"
+#include "err.h"
+
+#ifndef DEFAULT_RUNDIR
+# define DEFAULT_RUNDIR "/run/pluto/"
+#endif
+
+#ifndef DEFAULT_CTL_SOCKET
+# define DEFAULT_CTL_SOCKET DEFAULT_RUNDIR "/pluto.ctl"
+#endif
+
 
 /* Since the message remains on one host, native representation is used.
  * Think of this as horizontal microcode: all selected operations are
@@ -39,7 +52,7 @@
  * it is likely that the relevant part of the message changes less frequently.
  * Whack uses WHACK_BASIC_MAGIC in those cases.
  *
- * When you increment WHACK_BASIC_MAGIC, reset WHACH_MAGIC's last number to 0.
+ * When you increment WHACK_BASIC_MAGIC, reset WHACK_MAGIC's last number to 0.
  * This allows for more WHACK_BASIC_MAGIC values.
  *
  * NOTE: no value of WHACK_BASIC_MAGIC may equal any value of WHACK_MAGIC.
@@ -47,7 +60,7 @@
  */
 
 #define WHACK_BASIC_MAGIC (((((('w' << 8) + 'h') << 8) + 'k') << 8) + 25)
-#define WHACK_MAGIC (((((('o' << 8) + 'h') << 8) + 'k') << 8) + 45)
+#define WHACK_MAGIC (((((('o' << 8) + 'h') << 8) + 'k') << 8) + 46)
 
 /*
  * Where, if any, is the pubkey coming from.
@@ -56,7 +69,7 @@
  * version number.
  */
 enum whack_pubkey_type {
-	WHACK_PUBKEY_NONE,
+	WHACK_PUBKEY_NONE = 0,	/* must be zero (to make it default) */
 	WHACK_PUBKEY_CERTIFICATE_NICKNAME,
 	WHACK_PUBKEY_CKAID,
 };
@@ -93,7 +106,7 @@ struct whack_end {
 	ip_range pool_range;	/* store start of v4 addresspool */
 	bool xauth_server;	/* for XAUTH */
 	bool xauth_client;
-	char *username;
+	char *xauth_username;
 	bool modecfg_server;	/* for MODECFG */
 	bool modecfg_client;
 	bool cat;		/* IPv4 Client Address Translation */
@@ -149,6 +162,7 @@ struct whack_message {
 	bool whack_async;
 
 	lset_t policy;
+	lset_t sighash_policy;
 	deltatime_t sa_ike_life_seconds;
 	deltatime_t sa_ipsec_life_seconds;
 	deltatime_t sa_rekey_margin;
@@ -157,7 +171,7 @@ struct whack_message {
 	unsigned long sa_replay_window;
 	deltatime_t r_timeout; /* in secs */
 	deltatime_t r_interval; /* in msec */
-	enum nic_offload_options nic_offload;
+	enum yna_options nic_offload;
 
 	/* For IKEv1 RFC 3706 - Dead Peer Detection */
 	deltatime_t dpd_delay;
@@ -169,7 +183,7 @@ struct whack_message {
 	enum keyword_remotepeertype remotepeertype;
 
 	/* Force the use of NAT-T on a connection */
-	enum encaps_options encaps;
+	enum yna_options encaps;
 
 	/* Option to allow per-conn setting of sending of NAT-T keepalives - default is enabled  */
 	bool nat_keepalive;
@@ -190,8 +204,6 @@ struct whack_message {
 
 	/* send our own libreswan vendorid or not */
 	bool send_vendorid;
-
-	bool sha2_truncbug;
 
 	/* Checking if this connection is configured by Network Manager */
 	bool nmconfigured;
@@ -252,6 +264,7 @@ struct whack_message {
 	/* for WHACK_OPINITIATE */
 	bool whack_oppo_initiate;
 	ip_address oppo_my_client, oppo_peer_client;
+	int oppo_proto, oppo_dport;
 
 	/* for WHACK_TERMINATE: */
 	bool whack_terminate;
@@ -343,8 +356,8 @@ struct whack_message {
 	 * 15 unused (was myid)
 	 * 16 ike
 	 * 17 esp
-	 * 18 left.username
-	 * 19 right.username
+	 * 18 left.xauth_username
+	 * 19 right.xauth_username
 	 * 20 connalias
 	 * 21 left.host_addr_name
 	 * 22 right.host_addr_name
@@ -396,7 +409,7 @@ extern void clear_end(struct whack_end *e);
 extern size_t whack_get_secret(char *buf, size_t bufsize);
 extern int whack_get_value(char *buf, size_t bufsize);
 
-extern bool lsw_alias_cmp(const char *needle, const char *haystack);
+extern bool lsw_alias_cmp(const char *name, const char *aliases);
 extern void whack_process(int whackfd, const struct whack_message *const m);
 
 #endif /* _WHACK_H */

@@ -3,7 +3,7 @@
 # Copyright (C) 2001, 2002  Henry Spencer.
 # Copyright (C) 2003-2006   Xelerance Corporation
 # Copyright (C) 2012 Paul Wouters <paul@libreswan.org>
-# Copyright (C) 2015,2017 Andrew Cagney
+# Copyright (C) 2015,2017-2018 Andrew Cagney
 # Copyright (C) 2015-2016 Tuomo Soini <tis@foobar.fi>
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -58,7 +58,7 @@ include ${LIBRESWANSRCDIR}/mk/objdir.mk
 include ${LIBRESWANSRCDIR}/mk/defaults/${BUILDENV}.mk
 
 # Variables in this file with names starting with INC_ are not for use
-# by Makefiles which include it; they are subject to change without warning.
+# by Makefiles that include this file; they are subject to change without warning.
 #
 # "Final" and "finally" refer to where the files will end up on the
 # running IPsec system, as opposed to where they get installed by our
@@ -73,11 +73,6 @@ include ${LIBRESWANSRCDIR}/mk/defaults/${BUILDENV}.mk
 # Note: Variables here are for Makefiles and build system only.
 # IPSEC_ prefixed variables are to be used in source code
 
-
-### boilerplate, do not change, various scripts use extended BASH syntax!
-SHELL=/bin/bash
-export SHELL
-
 ### install pathnames
 
 # DESTDIR can be used to supply a prefix to all install targets.
@@ -91,7 +86,7 @@ DESTDIR?=
 INC_USRLOCAL?=/usr/local
 
 # PUBDIR is where the "ipsec" command goes; beware, many things define PATH
-# settings which are assumed to include it (or at least, to include *some*
+# settings which are assumed to include PUBDIR (or at least, to include *some*
 # copy of the "ipsec" command).
 PUBDIR?=$(DESTDIR)$(INC_USRLOCAL)/sbin
 
@@ -112,7 +107,7 @@ SBINDIR?=$(DESTDIR)$(FINALSBINDIR)
 
 # where the appropriate manpage tree is located
 # location within INC_USRLOCAL
-INC_MANDIR?=share/man
+INC_MANDIR?=man
 FINALMANDIR=$(INC_USRLOCAL)/$(INC_MANDIR)
 # the full pathname
 MANTREE?=$(DESTDIR)$(FINALMANDIR)
@@ -162,10 +157,10 @@ FINALLOGDIR?=$(FINALVARDIR)/log
 LOGDIR?=$(DESTDIR)$(FINALLOGDIR)
 
 # Note: this variable gets passed in, as in "make INITSYSTEM=systemd"
-INITSYSTEM ?= $(shell $(SHELL) $(top_srcdir)/packaging/utils/lswan_detect.sh init)
+INITSYSTEM ?= $(shell $(top_srcdir)/packaging/utils/lswan_detect.sh init)
 
 # An attempt is made to automatically figure out where boot/shutdown scripts
-# will finally go:  the first directory in INC_RCDIRS which exists gets them.
+# will finally go:  the first directory in INC_RCDIRS that exists gets them.
 # If none of those exists (or INC_RCDIRS is empty), INC_RCDEFAULT gets them.
 # With a non-null DESTDIR, INC_RCDEFAULT will be used unless one of the
 # INC_RCDIRS directories has been pre-created under DESTDIR.
@@ -224,13 +219,11 @@ INSTALL?=install
 # Note that the install procedures will never overwrite an existing config
 # file, which is why -b is not specified for them.
 INSTBINFLAGS?=-b --suffix=.old
-INSTSUIDFLAGS?=--mode=u+rxs,g+rx,o+rx --group=root -b --suffix=.old
 
 # busybox install is not emulating a real install command well enough
 SWANCHECKLINK=$(shell readlink /usr/bin/install)
 ifeq ($(SWANCHECKLINK /bin/busybox),)
 INSTBINFLAGS=
-INSTSUIDFLAGS=-m 0755 -g root -o root
 endif
 
 
@@ -238,7 +231,6 @@ INSTMANFLAGS?=--mode=0644
 INSTCONFFLAGS?=--mode=0644
 # For OSX use
 #INSTBINFLAGS?=-b -B .old
-#INSTSUIDFLAGS?=--mode=u+rxs,g+rx,o+rx --group=root -b -B .old
 
 # flags for bison, overrode in packages/default/foo
 BISONOSFLAGS?=
@@ -249,7 +241,10 @@ BISONOSFLAGS?=
 NSSFLAGS?=$(shell pkg-config --cflags nss)
 # We don't want to link against every library pkg-config --libs nss
 # returns
-NSS_LDFLAGS ?= -lnss3 -lnspr4
+NSS_LDFLAGS ?= -lnss3
+NSS_SMIME_LDFLAGS ?= -lsmime3
+NSS_UTIL_LDFLAGS ?= -lnssutil3
+NSPR_LDFLAGS ?= -lnspr4
 
 # Use nss copy for CERT_CompareAVA
 # See https://bugzilla.mozilla.org/show_bug.cgi?id=1336487
@@ -261,6 +256,11 @@ NSS_REQ_AVA_COPY?=true
 # is currently true for basically all distro's
 USE_XFRM_HEADER_COPY?=true
 
+# Some systems have a bogus combination of glibc and kernel-headers which
+# causes a conflict in the IPv6 defines. Try enabling this option as a workaround
+# when you see errors related to 'struct in6_addr'
+USE_GLIBC_KERN_FLIP_HEADERS?=false
+
 # Enable NIC IPsec hardware offloading API. Introduced in Linux Kernel 4.12
 USE_NIC_OFFLOAD?=true
 
@@ -268,6 +268,10 @@ USE_NIC_OFFLOAD?=true
 # include file, enable this workaround option that will enable an included copy of
 # this file as shipped with libreswan. The copy is taken from unbound 1.6.0.
 USE_UNBOUND_EVENT_H_COPY?=true
+
+# Install the portexclude service for policies/portexcludes.conf policies
+# Disabled per default for now because it requires python[23]
+USE_PORTEXCLUDES?=false
 
 # The default DNSSEC root key location is set to /var/lib/unbound/root.key
 # DEFAULT_DNSSEC_ROOTKEY_FILE=/var/lib/unbound/root.key
@@ -277,10 +281,6 @@ USE_UNBOUND_EVENT_H_COPY?=true
 GCC?=gcc
 
 MAKE?=make
-
-# You can compile using Electric Fence - this is used for running the test suite
-# EFENCE=-lefence
-EFENCE?=
 
 # Enable AddressSanitizer - see https://libreswan.org/wiki/Compiling_with_AddressSanitizer
 # requires clang or gcc >= 4.8 and libasan. Do not combine with Electric Fence and do not
@@ -296,7 +296,7 @@ KLIPSCOMPILE?=-O2 -DCONFIG_KLIPS_ALG -DDISABLE_UDP_CHECKSUM
 #export MALLOC_PERTURB_=$(($RANDOM % 255 + 1))
 
 # extra link flags
-USERLINK?=-Wl,-z,relro,-z,now -g -pie ${EFENCE} ${ASAN}
+USERLINK?=-Wl,-z,relro,-z,now -g -pie $(EFENCE_LDFLAGS) ${ASAN}
 
 PORTINCLUDE?=
 
@@ -365,66 +365,9 @@ USE_SINGLE_CONF_DIR?=false
 # Except this to change in Q1 2011
 USE_KEYRR?=true
 
-# Build support for Linux 2.4 and 2.6 KLIPS kernel level IPsec support
-# for pluto
-USE_KLIPS?=true
-
-# Build support for 2.6 KLIPS/MAST variation in pluto
-USE_MAST?=false
-
-# MAST requires KLIPS
-ifeq ($(USE_MAST),true)
-USE_KLIPS=true
-endif
-
-# MAST is generally a prerequisite for SAREF support in applications
-USE_SAREF_KERNEL?=false
-
-# Build support for Linux NETKEY (XFRM) kernel level IPsec support for
-# pluto (aka "native", "kame")
-USE_NETKEY?=true
-
-# KLIPS needs PFKEYv2, but sometimes we want PFKEY without KLIPS
-# Note: NETLINK does not use PFKEY, but it does share some code,
-# so it is required for NETKEY as well.
-ifeq ($(USE_KLIPS),true)
-USE_PFKEYv2=true
-else
-ifeq ($(USE_NETKEY),true)
-USE_PFKEYv2=true
-endif
-endif
-
-# include support for BSD/KAME IPsec in pluto (on *BSD and OSX)
-USE_BSDKAME?=false
-ifeq ($(USE_BSDKAME),true)
-USE_NETKEY=false
-USE_KLIPS=false
-endif
-
-# include PAM support for XAUTH when available on the platform
-
-ifeq ($(OSDEP),linux)
-USE_XAUTHPAM?=true
-endif
-ifeq ($(OSDEP),bsd)
-USE_XAUTHPAM?=true
-endif
-ifeq ($(OSDEP),darwin)
-USE_XAUTHPAM?=true
-endif
-ifeq ($(OSDEP),sunos)
-USE_XAUTHPAM?=true
-endif
-
 # Build support for integrity check for libreswan on startup
 USE_FIPSCHECK?=false
 FIPSPRODUCTCHECK?=/etc/system-fips
-
-# Build support for the Linux Audit system
-ifeq ($(OSDEP),linux)
-USE_LINUX_AUDIT?=false
-endif
 
 # Enable Labeled IPsec Functionality (requires SElinux)
 USE_LABELED_IPSEC?=false
@@ -432,36 +375,14 @@ USE_LABELED_IPSEC?=false
 # Enable seccomp support (whitelist allows syscalls)
 USE_SECCOMP?=false
 
-# Support for LIBCAP-NG to drop unneeded capabilities for the pluto daemon
-USE_LIBCAP_NG?=true
-ifeq ($(OSDEP),darwin)
-USE_LIBCAP_NG=false
-endif
-
 # Support for Network Manager
 USE_NM?=true
-ifeq ($(OSDEP),darwin)
-USE_NM=false
-endif
 
 # Include LDAP support (currently used for fetching CRLs)
 USE_LDAP?=false
 
 # Include libcurl support (currently used for fetching CRLs)
 USE_LIBCURL?=true
-
-# should we include additional (strong) algorithms?  It adds a measureable
-# amount of code space to pluto, and many of the algorithms have not had
-# the same scrutiny that AES and 3DES have received, but offers possibilities
-# of switching away from AES/3DES quickly.
-# DH22 is too weak - the others listed here are not broken, just not popular
-USE_SERPENT?=true
-USE_TWOFISH?=true
-USE_3DES?=true
-USE_DH22?=false
-USE_CAMELLIA?=true
-USE_CAST?=true
-USE_RIPEMD?=false
 
 # Do we want to limit the number of ipsec connections artificially
 USE_IPSEC_CONNECTION_LIMIT?=false
@@ -486,14 +407,6 @@ IPSECVIDVERSION:=$(shell echo ${IPSECVERSION} | sed 's/^\([^-]*\)-\([^-]*\)-.*/\
 export IPSECVIDVERSION
 endif
 
-# On MAC OSX , we have to use YACC and not BISON. And use different backup
-# file suffix.
-ifeq ($(BUILDENV),"darwin")
-USE_YACC?=true
-INSTBINFLAGS=-D -b -B .old
-INSTSUIDFLAGS=--mode=u+rxs,g+rx,o+rx --group=root -b -B .old
-endif
-
 OBJDIRTOP?=${LIBRESWANSRCDIR}/${OBJDIR}
 
 #
@@ -505,7 +418,6 @@ export OBJDIRTOP
 
 KLIPSINC=${LIBRESWANSRCDIR}/linux/include
 KLIPSSRCDIR=${LIBRESWANSRCDIR}/linux/net/ipsec
-#KLIPSSRCDIR=/mara1/git/klips/net/ipsec
 
 LIBSWANDIR=${LIBRESWANSRCDIR}/lib/libswan
 

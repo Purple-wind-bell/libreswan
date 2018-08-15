@@ -1,7 +1,7 @@
 /* IPsec DOI and Oakley resolution routines
  * Copyright (C) 1998-2002,2010-2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2007,2008 Michael Richardson <mcr@xelerance.com>
- * Copyright (C) 2012-2013 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2012-2018 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2012 Wes Hardaker <opensource@hardakers.net>
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
  *
@@ -16,14 +16,17 @@
  * for more details.
  */
 
+struct payload_digest;
+struct state;
+struct lswlog;
+
 struct xfrm_user_sec_ctx_ike *uctx; /* forward declaration */
 
 typedef void initiator_function(int whack_sock,
 				struct connection *c,
 				struct state *predecessor,
 				lset_t policy,
-				unsigned long try,
-				enum crypto_importance importance
+				unsigned long try
 #ifdef HAVE_LABELED_IPSEC
 				, struct xfrm_user_sec_ctx_ike *uctx
 #endif
@@ -31,34 +34,21 @@ typedef void initiator_function(int whack_sock,
 
 extern void ipsecdoi_initiate(int whack_sock, struct connection *c,
 			      lset_t policy, unsigned long try,
-			      so_serial_t replacing,
-			      enum crypto_importance importance
+			      so_serial_t replacing
 #ifdef HAVE_LABELED_IPSEC
 			      , struct xfrm_user_sec_ctx_ike *uctx
 #endif
 			      );
 
-extern void ipsecdoi_replace(struct state *st,
-			     lset_t policy_add, lset_t policy_del,
-			     unsigned long try);
+extern void ipsecdoi_replace(struct state *st, unsigned long try);
 
 extern void init_phase2_iv(struct state *st, const msgid_t *msgid);
 
-extern state_transition_fn
-	main_inI1_outR1,
-	main_inR1_outI2,
-	main_inI2_outR2,
-	main_inR2_outI3,
-	main_inI3_outR3,
-	main_inR3,
-	aggr_inI1_outR1,
-	aggr_inR1_outI2,
-	aggr_inI2;
 /*
  * forward
  */
 struct oakley_group_desc;
-extern bool send_delete(struct state *st);
+extern void send_delete(struct state *st);
 extern bool accept_delete(struct msg_digest *md,
 			  struct payload_digest *p);
 extern void accept_self_delete(struct msg_digest *md);
@@ -71,12 +61,6 @@ extern void send_notification_from_md(struct msg_digest *md, notification_t type
 extern notification_t accept_KE(chunk_t *dest, const char *val_name,
 				const struct oakley_group_desc *gr,
 				pb_stream *pbs);
-
-/*
- * some additional functions are exported for xauth.c
- */
-extern bool close_message(pb_stream *pbs, struct state *st) MUST_USE_RESULT;
-extern bool encrypt_message(pb_stream *pbs, struct state *st) MUST_USE_RESULT;
 
 /* START_HASH_PAYLOAD_NO_HASH_START
  *
@@ -143,3 +127,6 @@ extern bool extract_peer_id(enum ike_id_type kind, struct id *peer, const pb_str
 
 struct pluto_crypto_req;	/* prevent struct type being local to function protocol */
 extern void unpack_nonce(chunk_t *n, const struct pluto_crypto_req *r);
+
+extern void lswlog_child_sa_established(struct lswlog *buf, struct state *st);
+extern void lswlog_ike_sa_established(struct lswlog *buf, struct state *st);

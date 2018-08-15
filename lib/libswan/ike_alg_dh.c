@@ -25,8 +25,8 @@
 #include "ike_alg.h"
 
 #include "ike_alg_dh.h"
-#include "ike_alg_nss_modp.h"
-#include "ike_alg_nss_ecp.h"
+#include "ike_alg_dh_nss_modp_ops.h"
+#include "ike_alg_dh_nss_ecp_ops.h"
 
 /*
  * Oakley group description
@@ -38,9 +38,10 @@
 
 /* magic signifier */
 const struct oakley_group_desc unset_group = {
-	.group = OAKLEY_GROUP_invalid,
+	.group = 65535, /* Reserved for private use */
 };
 
+#ifdef USE_DH2
 const struct oakley_group_desc oakley_group_modp1024 = {
 	.common = {
 		.algo_type = IKE_ALG_DH,
@@ -58,8 +59,9 @@ const struct oakley_group_desc oakley_group_modp1024 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP1024_MODULUS,
 	.bytes = BYTES_FOR_BITS(1024),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
+#endif
 
 const struct oakley_group_desc oakley_group_modp1536 = {
 	.common = {
@@ -78,7 +80,7 @@ const struct oakley_group_desc oakley_group_modp1536 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP1536_MODULUS,
 	.bytes = BYTES_FOR_BITS(1536),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_modp2048 = {
@@ -99,7 +101,7 @@ const struct oakley_group_desc oakley_group_modp2048 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP2048_MODULUS,
 	.bytes = BYTES_FOR_BITS(2048),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_modp3072 = {
@@ -120,7 +122,7 @@ const struct oakley_group_desc oakley_group_modp3072 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP3072_MODULUS,
 	.bytes = BYTES_FOR_BITS(3072),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_modp4096 = {
@@ -141,7 +143,7 @@ const struct oakley_group_desc oakley_group_modp4096 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP4096_MODULUS,
 	.bytes = BYTES_FOR_BITS(4096),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_modp6144 = {
@@ -162,7 +164,7 @@ const struct oakley_group_desc oakley_group_modp6144 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP6144_MODULUS,
 	.bytes = BYTES_FOR_BITS(6144),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_modp8192 = {
@@ -183,7 +185,7 @@ const struct oakley_group_desc oakley_group_modp8192 = {
 	.gen = MODP_GENERATOR,
 	.modp = MODP8192_MODULUS,
 	.bytes = BYTES_FOR_BITS(8192),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 
 const struct oakley_group_desc oakley_group_dh19 = {
@@ -203,7 +205,7 @@ const struct oakley_group_desc oakley_group_dh19 = {
 	.group = OAKLEY_GROUP_ECP_256,
 	.bytes = BYTES_FOR_BITS(256) * 2,
 	.nss_oid = SEC_OID_SECG_EC_SECP256R1,
-	.dhmke_ops = &ike_alg_nss_ecp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_ecp_ops,
 };
 
 const struct oakley_group_desc oakley_group_dh20 = {
@@ -223,7 +225,7 @@ const struct oakley_group_desc oakley_group_dh20 = {
 	.group = OAKLEY_GROUP_ECP_384,
 	.bytes = BYTES_FOR_BITS(384) * 2,
 	.nss_oid = SEC_OID_SECG_EC_SECP384R1,
-	.dhmke_ops = &ike_alg_nss_ecp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_ecp_ops,
 };
 
 const struct oakley_group_desc oakley_group_dh21 = {
@@ -243,7 +245,7 @@ const struct oakley_group_desc oakley_group_dh21 = {
 	.group = OAKLEY_GROUP_ECP_521,
 	.bytes = BYTES_FOR_BITS(521) * 2,
 	.nss_oid = SEC_OID_SECG_EC_SECP521R1,
-	.dhmke_ops = &ike_alg_nss_ecp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_ecp_ops,
 };
 
 #ifdef USE_DH22
@@ -264,10 +266,11 @@ const struct oakley_group_desc oakley_group_dh22 = {
 	.gen = MODP_GENERATOR_DH22,
 	.modp = MODP1024_MODULUS_DH22,
 	.bytes = BYTES_FOR_BITS(1024),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
 #endif
 
+#ifdef USE_DH23
 const struct oakley_group_desc oakley_group_dh23 = {
 	.common = {
 		.algo_type = IKE_ALG_DH,
@@ -286,9 +289,11 @@ const struct oakley_group_desc oakley_group_dh23 = {
 	.gen = MODP_GENERATOR_DH23,
 	.modp = MODP2048_MODULUS_DH23,
 	.bytes = BYTES_FOR_BITS(2048),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
+#endif
 
+#ifdef USE_DH24
 const struct oakley_group_desc oakley_group_dh24 = {
 	.common = {
 		.algo_type = IKE_ALG_DH,
@@ -307,5 +312,29 @@ const struct oakley_group_desc oakley_group_dh24 = {
 	.gen = MODP_GENERATOR_DH24,
 	.modp = MODP2048_MODULUS_DH24,
 	.bytes = BYTES_FOR_BITS(2048),
-	.dhmke_ops = &ike_alg_nss_modp_dhmke_ops,
+	.dh_ops = &ike_alg_dh_nss_modp_ops,
 };
+#endif
+
+/* https://tools.ietf.org/html/rfc8031 */
+
+#ifdef USE_DH31
+const struct oakley_group_desc oakley_group_dh31 = {
+	.common = {
+		.algo_type = IKE_ALG_DH,
+		.name = "DH31",
+		.fqn = "DH31",
+		.names = { "dh31", "curve25519", },
+		.officname = "dh31",
+		.id = {
+			[IKEv1_OAKLEY_ID] = OAKLEY_GROUP_CURVE25519,
+			[IKEv1_ESP_ID] = -1,
+			[IKEv2_ALG_ID] = OAKLEY_GROUP_CURVE25519,
+		},
+	},
+	.group = OAKLEY_GROUP_CURVE25519,
+	.bytes = 32 /* octets */,
+	.nss_oid = SEC_OID_CURVE25519,
+	.dh_ops = &ike_alg_dh_nss_ecp_ops,
+};
+#endif

@@ -35,7 +35,6 @@
 
 #include <libreswan.h>
 #include "libreswan/pfkeyv2.h"
-#include "kameipsec.h"
 
 #include "sysdep.h"
 #include "constants.h"
@@ -144,17 +143,6 @@ struct host_pair *find_host_pair(const ip_address *myaddr,
 		hisport = pluto_port;
 
 	for (prev = NULL, p = host_pairs; p != NULL; prev = p, p = p->next) {
-		if (p->connections != NULL && (p->connections->kind == CK_INSTANCE) &&
-				(p->connections->spd.that.id.kind == ID_NULL))
-		{
-			DBG(DBG_CONTROLMORE, {
-				char ci[CONN_INST_BUF];
-				DBG_log("find_host_pair: ignore CK_INSTANCE with ID_NULL hp:\"%s\"%s",
-					p->connections->name,
-					fmt_conn_instance(p->connections, ci));
-			});
-			continue;
-		}
 
 		DBG(DBG_CONTROLMORE, {
 			ipstr_buf b1;

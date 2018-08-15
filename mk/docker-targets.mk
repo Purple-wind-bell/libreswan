@@ -15,7 +15,7 @@ W3 = $(or $(word 3, $(subst -, ,$1)), $(value 2))
 
 FIRST_TARGET ?=$@	# keep track of original target
 DISTRO ?= fedora	# default distro
-DISTRO_REL ?= 27 	# default release
+DISTRO_REL ?= 28 	# default release
 
 DI_T ?= swanbase 	#docker image tag
 
@@ -36,6 +36,9 @@ TWEAKS=
 ifeq ($(DISTRO), ubuntu)
 	DOCKERFILE_PKG=$(D)/Dockerfile-debian-min-packages
 	TWEAKS = dcokerfile-ubuntu-cmd
+	ifeq ($(DISTRO_REL), xenial)
+		TWEAKS = flip-glibc-kern-headers
+	endif
 endif
 
 ifeq ($(DISTRO), debian)
@@ -57,15 +60,21 @@ ifeq ($(DISTRO), fedora)
 		TWEAKS = dcokerfile-remove-libreswan-spec
 		TWEAKS += disable-seccomp
 		TWEAKS += f22-missing-rpm
+		TWEAKS += f22-disable-dh31
 	endif
 endif
 
-BRANCH = $(shell git rev-parse --abbrev-ref HEAD)
+BRANCH = $(shell test -d .git && test -f /usr/bin/git -o -f /usr/local/bin/git && git rev-parse --abbrev-ref HEAD)
 TRAVIS_BANCH = $(call W1, $(BRANCH),'')
 ifeq ($(TRAVIS_BANCH), travis)
 	DISTRO =  $(call W2, $(BRANCH),fedora)
 	DISTRO_REL = $(call W3, $(BRANCH),27)
 endif
+
+
+PHONY: f22-disable-dh31
+f22-disable-dh31:
+	$(shell (echo "USE_DH31=false" >> Makefile.inc.local))
 
 PHONY: f22-missing-rpm
 f22-missing-rpm:
@@ -91,6 +100,9 @@ disable-dsnssec:
 disable-seccomp:
 	$(shell (grep "^USE_SECCOMP=" Makefile.inc.local || echo "USE_SECCOMP=false" >> Makefile.inc.local))
 
+.PHONY: flip-glibc-kern-headers
+flip-glibc-kern-headers:
+	$(shell (grep "^USE_GLIBC_KERN_FLIP_HEADERS=" Makefile.inc.local || echo "USE_GLIBC_KERN_FLIP_HEADERS=true" >> Makefile.inc.local))
 
 #
 # end  of Distribution tweaks

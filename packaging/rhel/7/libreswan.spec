@@ -8,6 +8,7 @@
 # Libreswan config options
 %global libreswan_config \\\
     FINALLIBEXECDIR=%{_libexecdir}/ipsec \\\
+    FINALMANDIR=%{_mandir} \\\
     INC_RCDEFAULT=%{_initrddir} \\\
     INC_USRLOCAL=%{_prefix} \\\
     INITSYSTEM=systemd \\\
@@ -55,6 +56,7 @@ BuildRequires: libevent-devel
 %if 0%{with_dnssec}
 BuildRequires: ldns-devel
 BuildRequires: unbound-devel >= 1.6.0
+Requires: unbound-libs >= 1.6.0
 %global USE_DNSSEC true
 %else
 %global USE_DNSSEC false
@@ -88,7 +90,7 @@ tunnel is a virtual private network or VPN.
 This package contains the daemons and userland tools for setting up
 Libreswan.
 
-Libreswan also supports IKEv2 (RFC4309) and Secure Labeling
+Libreswan also supports IKEv2 (RFC7296) and Secure Labeling
 
 Libreswan is based on Openswan-2.6.38 which in turn is based on FreeS/WAN-2.04
 
@@ -128,7 +130,7 @@ make \
 FS=$(pwd)
 rm -rf %{buildroot}/usr/share/doc/libreswan
 
-install -d -m 0700 %{buildroot}%{_rundir}/pluto
+install -d -m 0755 %{buildroot}%{_rundir}/pluto
 # used when setting --perpeerlog without --perpeerlogbase
 install -d -m 0700 %{buildroot}%{_localstatedir}/log/pluto/peer
 install -d %{buildroot}%{_sbindir}
@@ -165,7 +167,7 @@ export NSS_DISABLE_HW_GCM=1
 %{buildroot}%{_libexecdir}/ipsec/cavp -v2 ikev2.fax | \
     diff -u ikev2.fax - > /dev/null
 : starting CAVS test for IKEv1 RSASIG
-%{buildroot}%{_libexecdir}/ipsec/cavp -v1sig ikev1_dsa.fax | \
+%{buildroot}%{_libexecdir}/ipsec/cavp -v1dsa ikev1_dsa.fax | \
     diff -u ikev1_dsa.fax - > /dev/null
 : starting CAVS test for IKEv1 PSK
 %{buildroot}%{_libexecdir}/ipsec/cavp -v1psk ikev1_psk.fax | \
@@ -194,7 +196,7 @@ prelink -u %{_libexecdir}/ipsec/* 2>/dev/null || :
 %attr(0644,root,root) %config(noreplace) %{_sysconfdir}/sysctl.d/50-libreswan.conf
 %attr(0700,root,root) %dir %{_localstatedir}/log/pluto
 %attr(0700,root,root) %dir %{_localstatedir}/log/pluto/peer
-%attr(0700,root,root) %dir %{_rundir}/pluto
+%attr(0755,root,root) %dir %{_rundir}/pluto
 %attr(0644,root,root) %{_tmpfilesdir}/libreswan.conf
 %attr(0644,root,root) %{_unitdir}/ipsec.service
 %attr(0644,root,root) %config(noreplace) %{_sysconfdir}/pam.d/pluto

@@ -1,4 +1,5 @@
-/* parsing packets: formats and tools
+/* parsing packets: formats and tools, for libreswan
+ *
  * Copyright (C) 1997 Angelos D. Keromytis.
  * Copyright (C) 1998-2001,2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2005-2007 Michael Richardson <mcr@xelerance.com>
@@ -7,6 +8,7 @@
  * Copyright (C) 2011-2012 Avesh Agarwal <avagarwa@redhat.com>
  * Copyright (C) 2012-2013 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2013 Wolfgang Nothdurft <wolfgang@linogate.de>
+ * Copyright (C) 2018 Andrew Cagney
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -22,15 +24,12 @@
 #ifndef _PACKET_H
 #define _PACKET_H
 
+#include "lswcdefs.h"
+#include "chunk.h"
+
 /* a struct_desc describes a structure for the struct I/O routines.
  * This requires arrays of field_desc values to describe struct fields.
  */
-
-typedef const struct struct_desc {
-	const char *name;
-	const struct field_desc *fields;
-	size_t size;
-} struct_desc;
 
 /* Note: if an ft_af_enum field has the ISAKMP_ATTR_AF_TV bit set,
  * the subsequent ft_lv field will be interpreted as an immediate value.
@@ -42,6 +41,8 @@ enum field_type {
 	ft_zig,			/* zero (ignore violations) */
 	ft_nat,			/* natural number (may be 0) */
 	ft_len,			/* length of this struct and any following crud */
+	ft_fcp,			/* message's first contained payload type field */
+	ft_pnp,			/* payload's next payload type field */
 	ft_lv,			/* length/value field of attribute */
 	ft_enum,		/* value from an enumeration */
 	ft_loose_enum,		/* value from an enumeration with only some names known */
@@ -53,7 +54,7 @@ enum field_type {
 	ft_end,			/* end of field list */
 };
 
-typedef const struct field_desc {
+typedef const struct {
 	enum field_type field_type;
 	int size;		/* size, in bytes, of field */
 	const char *name;
@@ -66,27 +67,52 @@ typedef const struct field_desc {
 	const void *desc;
 } field_desc;
 
-/* The formatting of input and output of packets is done
- * through packet_byte_stream objects.
- * These describe a stream of bytes in memory.
- * Several routines are provided to manipulate these objects
+typedef const struct {
+	const char *name;
+	field_desc *fields;
+	size_t size;
+	int pt;	/* this payload type */
+} struct_desc;
+
+/*
+ * The formatting of input and output of packets is done through
+ * packet_byte_stream objects.  These describe a stream of bytes in
+ * memory.  Several routines are provided to manipulate these objects.
  * Actual packet transfer is done elsewhere.
  */
 struct packet_byte_stream {
 	struct packet_byte_stream *container;	/* PBS of which we are part */
 	struct_desc *desc;
 	const char *name;			/* what does this PBS represent? */
-	u_int8_t
-		*start,
-		*cur,		/* current position in stream */
-		*roof;		/* byte after last in PBS (on output: just a limit) */
-	/* For an output PBS, the length field will be filled in later so
-	 * we need to record its particulars.  Note: it may not be aligned.
+	uint8_t *start;				/* public: where this stream starts */
+	uint8_t *cur;				/* public: current position (end) of stream */
+	uint8_t *roof;				/* byte after last in PBS (on output: just a limit) */
+
+	/* For an output PBS some things may need to be patched up. */
+
+	/*
+	 * For patching Length field in header.
+	 *
+	 * Filled in by close_output_pbs().
+	 * Note: it may not be aligned.
 	 */
-	u_int8_t *lenfld;
-	field_desc *lenfld_desc;
+	u_int8_t *lenfld;	/* start of variable length field */
+	field_desc *lenfld_desc;	/* includes length */
+
+	/*
+	 * For patching Next Payload field in successive Payloads.
+	 *
+	 * References the header of the previous payload in this stream.
+	 * Initially it may reference the First-Next-Payload field of parent
+	 * (in case of ft_fcp)
+	 */
+	uint8_t *previous_np;	/* always one octet */
+	field_desc *previous_np_field;
+	struct_desc *previous_np_struct;
 };
 typedef struct packet_byte_stream pb_stream;
+
+extern const pb_stream empty_pbs;
 
 /*
  * For an input PBS:
@@ -98,21 +124,34 @@ typedef struct packet_byte_stream pb_stream;
  *	pbs_offset is current size of stream.
  *	pbs_room is maximum size allowed.
  *	pbs_left is amount of space remaining
+ *      pbs_as_chunk is the current stream's contents as a chunk
  */
+#define pbs_ok(PBS) ((PBS)->start != NULL)
 #define pbs_offset(pbs) ((size_t)((pbs)->cur - (pbs)->start))
 #define pbs_room(pbs) ((size_t)((pbs)->roof - (pbs)->start))
 #define pbs_left(pbs) ((size_t)((pbs)->roof - (pbs)->cur))
 
-extern void init_pbs(pb_stream *pbs, u_int8_t *start, size_t len,
-		     const char *name);
+/*
+ * Map a pbs onto a chunk, and chunk onto a pbs.
+ */
+extern pb_stream chunk_as_pbs(chunk_t chunk, const char *name);
+#define pbs_as_chunk(PBS) ((chunk_t){ .ptr = (PBS)->start, .len = pbs_offset(PBS), })
 
 /*
- * init_out_pbs:
- * Same as init_pbs except it scribbles on the buffer to prevent leakage.
- * Should be totally redundant.
+ * Initializers; point PBS at a pre-allocated (or static) buffer.
+ *
+ * init_out_pbs(): Same as init_pbs() except it scribbles on the
+ * buffer to prevent leakage.  Should be totally redundant.
+ *
+ * XXX: should the buffer instead be allocated as part of the PBS?
  */
-extern void init_out_pbs(pb_stream *pbs, u_int8_t *start, size_t len,
+extern void init_pbs(pb_stream *pbs, u_int8_t *start, size_t len,
 		     const char *name);
+extern void init_out_pbs(pb_stream *pbs, u_int8_t *start, size_t len,
+			 const char *name);
+extern pb_stream open_out_pbs(const char *name, uint8_t *buffer,
+			      size_t sizeof_buffer);
+extern void move_pbs_previous_np(pb_stream *dst, pb_stream *src);
 
 extern bool in_struct(void *struct_ptr, struct_desc *sd,
 		      pb_stream *ins, pb_stream *obj_pbs) MUST_USE_RESULT;
@@ -120,14 +159,12 @@ extern bool in_raw(void *bytes, size_t len, pb_stream *ins, const char *name) MU
 
 extern bool out_struct(const void *struct_ptr, struct_desc *sd,
 		       pb_stream *outs, pb_stream *obj_pbs) MUST_USE_RESULT;
+extern pb_stream open_output_struct_pbs(pb_stream *outs, const void *struct_ptr,
+				 struct_desc *sd) MUST_USE_RESULT;
+
 extern bool ikev1_out_generic(u_int8_t np, struct_desc *sd,
 			pb_stream *outs, pb_stream *obj_pbs) MUST_USE_RESULT;
 extern bool ikev1_out_generic_raw(u_int8_t np, struct_desc *sd,
-			    pb_stream *outs, const void *bytes, size_t len,
-			    const char *name) MUST_USE_RESULT;
-extern bool ikev2_out_generic(u_int8_t np, struct_desc *sd,
-			pb_stream *outs, pb_stream *obj_pbs) MUST_USE_RESULT;
-extern bool ikev2_out_generic_raw(u_int8_t np, struct_desc *sd,
 			    pb_stream *outs, const void *bytes, size_t len,
 			    const char *name) MUST_USE_RESULT;
 extern void out_modify_previous_np(u_int8_t np, pb_stream *outs);
@@ -138,6 +175,7 @@ extern bool out_zero(size_t len, pb_stream *outs, const char *name) MUST_USE_RES
 extern bool out_raw(const void *bytes, size_t len, pb_stream *outs,
 		    const char *name) MUST_USE_RESULT;
 #define out_chunk(ch, outs, name) out_raw((ch).ptr, (ch).len, (outs), (name))
+
 extern void close_output_pbs(pb_stream *pbs);
 
 #define DBG_dump_pbs(pbs) DBG_dump((pbs)->name, (pbs)->start, pbs_offset(pbs))
@@ -653,6 +691,7 @@ extern struct_desc isakmp_vendor_id_desc;
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
 extern struct_desc isakmp_nat_d;
+extern struct_desc isakmp_nat_d_drafts;
 
 /* ISAKMP NAT-Traversal NAT-OA
  * layout from draft-ietf-ipsec-nat-t-ike-01.txt section 4.2
@@ -675,6 +714,8 @@ struct isakmp_nat_oa {
 	u_int16_t isanoa_reserved_3;
 };
 extern struct_desc isakmp_nat_oa;
+
+extern struct_desc isakmp_nat_oa_drafts;
 
 extern struct_desc isakmp_ignore_desc; /* generic payload (when ignoring) */
 
@@ -790,6 +831,7 @@ struct ikev2_generic {
 	u_int16_t isag_length;
 };
 extern struct_desc ikev2_generic_desc;
+extern struct_desc ikev2_unknown_payload_desc;
 
 struct ikev2_sa {
 	u_int8_t isasa_np;		/* Next payload */
@@ -856,7 +898,8 @@ struct ikev2_id {
 	u_int8_t isai_res1;
 	u_int16_t isai_res2;
 };
-extern struct_desc ikev2_id_desc;
+extern struct_desc ikev2_id_i_desc;
+extern struct_desc ikev2_id_r_desc;
 
 /* rfc4306, section 3.8 */
 struct ikev2_a {
@@ -956,11 +999,15 @@ struct ikev2_ts1 {
 	u_int16_t isat1_startport;
 	u_int16_t isat1_endport;
 };
-extern struct_desc ikev2_ts_desc;
+extern struct_desc ikev2_ts_i_desc;
+extern struct_desc ikev2_ts_r_desc;
 extern struct_desc ikev2_ts1_desc;
 
 /* rfc4306, section 3.14, encrypted payload, uses generic header */
 extern struct_desc ikev2_sk_desc;
+
+/* NULL struct to wrap encrypted portion of SK and SKF */
+extern struct_desc ikev2_encrypted_portion;
 
 /*
  * Configuration Payload . RFC 5996 section 3.15
@@ -1058,5 +1105,20 @@ extern struct_desc suggested_group_desc;
 #ifdef HAVE_LABELED_IPSEC
 extern struct_desc sec_ctx_desc;
 #endif
+
+/*
+ * Nasty evil global packet buffer.
+ */
+
+extern pb_stream reply_stream;
+extern u_int8_t reply_buffer[MAX_OUTPUT_UDP_SIZE];
+
+struct pbs_reply_backup {
+	pb_stream stream;
+	uint8_t *buffer;
+};
+
+struct pbs_reply_backup *save_reply_pbs(void);
+void restore_reply_pbs(struct pbs_reply_backup **);
 
 #endif /* _PACKET_H */

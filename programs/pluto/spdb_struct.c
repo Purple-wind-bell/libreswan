@@ -89,7 +89,7 @@ static struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 
 static struct alg_info_ike *ikev1_default_ike_info(void)
 {
-	static const struct parser_policy policy = {
+	static const struct proposal_policy policy = {
 		.ikev1 = TRUE,
 		.alg_is_ok = ike_alg_is_ike,
 	};
@@ -234,10 +234,10 @@ struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 			hash->type.oakley == OAKLEY_PRF);
 		if (halg > 0) {
 			hash->val = halg;
-			if (ike_alg_enc_requires_integ(enc_desc)) {
-				hash->type.oakley = OAKLEY_HASH_ALGORITHM;
-			} else {
+			if (encrypt_desc_is_aead(enc_desc)) {
 				hash->type.oakley = OAKLEY_PRF;
+			} else {
+				hash->type.oakley = OAKLEY_HASH_ALGORITHM;
 			}
 		}
 
@@ -252,7 +252,10 @@ struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 		 */
 		if (single_dh && transcnt > 0 &&
 		    ike_info->dh->group != last_modp) {
-			if (last_modp == OAKLEY_GROUP_MODP1024 ||
+			if (
+#ifdef USE_DH2
+			    last_modp == OAKLEY_GROUP_MODP1024 ||
+#endif
 			    last_modp == OAKLEY_GROUP_MODP1536) {
 				/*
 				 * The previous group will work on old Cisco gear,

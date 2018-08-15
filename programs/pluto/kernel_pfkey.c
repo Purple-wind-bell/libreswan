@@ -54,6 +54,7 @@
 #include "connections.h"
 #include "state.h"
 #include "kernel.h"
+#include "kernel_sadb.h"
 #include "kernel_pfkey.h"
 #include "timer.h"
 #include "log.h"
@@ -384,7 +385,7 @@ void pfkey_register_response(const struct sadb_msg *msg)
 	switch (msg->sadb_msg_satype) {
 	case K_SADB_SATYPE_AH:
 	case K_SADB_SATYPE_ESP:
-		kernel_alg_register_pfkey(msg);
+		kernel_add_sadb_algs(msg, PFKEYv2_MAX_MSGSIZE);
 		break;
 	case K_SADB_X_SATYPE_COMP:
 		/* ??? There ought to be an extension to list the
@@ -749,6 +750,7 @@ logerr:
 	return success;
 }
 
+#ifdef KLIPS
 /*  register SA types that can be negotiated */
 static void pfkey_register_proto(unsigned int sadb_register,
 				 unsigned satype, const char *satypename)
@@ -769,17 +771,9 @@ static void pfkey_register_proto(unsigned int sadb_register,
 	}
 }
 
-#ifdef KLIPS
 void klips_register_proto(unsigned satype, const char *satypename)
 {
 	return pfkey_register_proto(K_SADB_REGISTER, satype, satypename);
-}
-#endif
-
-#ifdef NETKEY_SUPPORT
-void netlink_register_proto(unsigned satype, const char *satypename)
-{
-	return pfkey_register_proto(SADB_REGISTER, satype, satypename);
 }
 #endif
 
@@ -1371,7 +1365,7 @@ bool pfkey_shunt_eroute(const struct connection *c,
 					ET_INT,
 					null_proto_info,
 					deltatime(0),
-					c->sa_priority,
+					calculate_sa_prio(c),
 					&c->sa_marks,
 					op, buf2
 #ifdef HAVE_LABELED_IPSEC
@@ -1464,7 +1458,7 @@ bool pfkey_sag_eroute(const struct state *st, const struct spd_route *sr,
 	return eroute_connection(sr,
 				 inner_spi, inner_spi, inner_proto,
 				 inner_esatype, proto_info + i,
-				 DEFAULT_IPSEC_SA_PRIORITY, NULL, op, opname
+				 0 /* KLIPS does not support priority */, NULL, op, opname
 #ifdef HAVE_LABELED_IPSEC
 				 , NULL
 #endif

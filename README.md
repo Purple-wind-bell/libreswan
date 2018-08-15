@@ -25,9 +25,9 @@ version 2; see the LICENSE and CREDIT.* files. Some smaller parts have
 a different license.
 
 ## Requirements
-A recent Linux distribution based on either kernel 2.4.x, 2.6.x or 3.x
-are the currently supported platforms. Libreswan has been ported to
-Win2k/BSD/OSX as well.
+Recent Linux distributions based on kernel 2.x, 3.x or 4.x
+are supported platforms. Libreswan has been ported to
+Win2k/BSD/OSX in the past as well.
 
 Most distributions have native packaged support for Libreswan. Libreswan is
 available for RHEL, Fedora, Ubuntu, Debian, Arch, OpenWrt and more.
@@ -171,7 +171,7 @@ Libreswan can join the development mailing list "swan-dev" or talk to the
 development team on IRC in #swan on irc.freenode.net
 
 For those who want to track things a bit more closely, the
-swan-commits@lists.libreswan.org mailinglist will mail all the commit
+swan-commits@lists.libreswan.org mailing list will mail all the commit
 messages when they happen. This list is quite busy during active
 development periods.
 

@@ -4,6 +4,7 @@
  * Copyright (C) 2013 Florian Weimer <fweimer@redhat.com>
  * Copyright (C) 2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2016 Sahana Prasad <sahana.prasad07@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -16,18 +17,18 @@
  * for more details.
  *
  */
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <libreswan.h>
 
-#include "constants.h"
-#include "lswlog.h"
+#include "constants.h"		/* for BYTES_FOR_BITS() */
+#include "ietf_constants.h"
 #include "ike_alg.h"
-#include "ike_alg_sha2.h"
-#include "ike_alg_nss_hash_ops.h"
-#include "ike_alg_nss_prf_ops.h"
+#include "ike_alg_hash.h"
+#include "ike_alg_prf.h"
+#include "ike_alg_integ.h"
+#include "ike_alg_hash_nss_ops.h"
+#include "ike_alg_prf_nss_ops.h"
+#include "sadb.h"
+#include <pkcs11t.h>
+
 
 const struct hash_desc ike_alg_hash_sha2_256 = {
 	.common = {
@@ -41,7 +42,7 @@ const struct hash_desc ike_alg_hash_sha2_256 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = -1,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.oid_tag = SEC_OID_SHA256,
@@ -49,7 +50,7 @@ const struct hash_desc ike_alg_hash_sha2_256 = {
 	},
 	.hash_digest_len = SHA2_256_DIGEST_SIZE,
 	.hash_block_size = 64,	/* from RFC 4868 */
-	.hash_ops = &ike_alg_nss_hash_ops,
+	.hash_ops = &ike_alg_hash_nss_ops,
 };
 
 const struct prf_desc ike_alg_prf_sha2_256 = {
@@ -64,7 +65,7 @@ const struct prf_desc ike_alg_prf_sha2_256 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = IKEv2_PRF_HMAC_SHA2_256,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.mechanism = CKM_SHA256_HMAC,
@@ -72,7 +73,7 @@ const struct prf_desc ike_alg_prf_sha2_256 = {
 	.prf_key_size = SHA2_256_DIGEST_SIZE,
 	.prf_output_size = SHA2_256_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_256,
-	.prf_ops = &ike_alg_nss_prf_ops,
+	.prf_ops = &ike_alg_prf_nss_ops,
 };
 
 const struct integ_desc ike_alg_integ_sha2_256 = {
@@ -87,18 +88,27 @@ const struct integ_desc ike_alg_integ_sha2_256 = {
 			[IKEv1_ESP_ID] = AUTH_ALGORITHM_HMAC_SHA2_256,
 			[IKEv2_ALG_ID] = IKEv2_AUTH_HMAC_SHA2_256_128,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.integ_keymat_size = SHA2_256_DIGEST_SIZE,
 	.integ_output_size = SHA2_256_DIGEST_SIZE / 2,
 	.integ_ikev1_ah_transform = AH_SHA2_256,
 	.prf = &ike_alg_prf_sha2_256,
+#ifdef SADB_X_AALG_SHA2_256HMAC
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_256HMAC,
+#endif
+#ifdef SADB_X_AALG_SHA2_256
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_256,
+#endif
+	.integ_netlink_xfrm_name = "hmac(sha256)",
+	.integ_tcpdump_name = "sha256",
+	.integ_kernel_audit_name = "HMAC_SHA2_256",
 };
 
 const struct integ_desc ike_alg_integ_hmac_sha2_256_truncbug = {
 	.common = {
 		.name = "hmac_sha2_256_truncbug",
-		.fqn = "HMAC_SHA2_256_truncbug",
+		.fqn = "HMAC_SHA2_256_TRUNCBUG",
 		.names = { "hmac_sha2_256_truncbug", },
 		.officname = "hmac_sha2_256_truncbug",
 		.algo_type = IKE_ALG_INTEG,
@@ -107,11 +117,34 @@ const struct integ_desc ike_alg_integ_hmac_sha2_256_truncbug = {
 			[IKEv1_ESP_ID] = AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG,
 			[IKEv2_ALG_ID] = -1,
 		},
-		.fips = FALSE,
+		.fips = false,
 	},
 	.integ_keymat_size = SHA2_256_DIGEST_SIZE,
 	.integ_output_size = BYTES_FOR_BITS(96),
 	.integ_ikev1_ah_transform = AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG, /* YES, not AH_... */
+#ifdef SADB_X_AALG_SHA2_256HMAC_TRUNCBUG
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_256HMAC_TRUNCBUG,
+#endif
+	.integ_netlink_xfrm_name = "hmac(sha256)",
+	.integ_tcpdump_name = "hmac_sha2_256_truncbug",
+	.integ_kernel_audit_name = "HMAC_SHA2_256_TRUNCBUG",
+};
+
+const CK_RSA_PKCS_PSS_PARAMS rsa_pss_sha2_256 = {
+	.hashAlg = CKM_SHA256,
+	.mgf = CKG_MGF1_SHA256,
+	.sLen = SHA2_256_DIGEST_SIZE,
+};
+
+static const uint8_t size_blob_256[ASN1_LEN_ALGO_IDENTIFIER] = LEN_RSA_PSS_SHA2_BLOB;
+static const uint8_t asn1_blob_256[ASN1_SHA2_RSA_PSS_SIZE] = RSA_PSS_SHA256_BLOB;
+
+const struct asn1_hash_blob asn1_rsa_pss_sha2_256 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_256,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_256,
+	.asn1_blob_len = ASN1_SHA2_RSA_PSS_SIZE,
+	.asn1_blob = asn1_blob_256,
 };
 
 const struct hash_desc ike_alg_hash_sha2_384 = {
@@ -126,7 +159,7 @@ const struct hash_desc ike_alg_hash_sha2_384 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = -1,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.oid_tag = SEC_OID_SHA384,
@@ -134,7 +167,7 @@ const struct hash_desc ike_alg_hash_sha2_384 = {
 	},
 	.hash_digest_len = SHA2_384_DIGEST_SIZE,
 	.hash_block_size = 128,	/* from RFC 4868 */
-	.hash_ops = &ike_alg_nss_hash_ops,
+	.hash_ops = &ike_alg_hash_nss_ops,
 };
 
 const struct prf_desc ike_alg_prf_sha2_384 = {
@@ -149,7 +182,7 @@ const struct prf_desc ike_alg_prf_sha2_384 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = IKEv2_PRF_HMAC_SHA2_384,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.mechanism = CKM_SHA384_HMAC,
@@ -157,7 +190,7 @@ const struct prf_desc ike_alg_prf_sha2_384 = {
 	.prf_key_size = SHA2_384_DIGEST_SIZE,
 	.prf_output_size = SHA2_384_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_384,
-	.prf_ops = &ike_alg_nss_prf_ops,
+	.prf_ops = &ike_alg_prf_nss_ops,
 };
 
 const struct integ_desc ike_alg_integ_sha2_384 = {
@@ -172,12 +205,38 @@ const struct integ_desc ike_alg_integ_sha2_384 = {
 			[IKEv1_ESP_ID] = AUTH_ALGORITHM_HMAC_SHA2_384,
 			[IKEv2_ALG_ID] = IKEv2_AUTH_HMAC_SHA2_384_192,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.integ_keymat_size = SHA2_384_DIGEST_SIZE,
 	.integ_output_size = SHA2_384_DIGEST_SIZE / 2,
 	.integ_ikev1_ah_transform = AH_SHA2_384,
 	.prf = &ike_alg_prf_sha2_384,
+#ifdef SADB_X_AALG_SHA2_384HMAC
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_384HMAC,
+#endif
+#ifdef SADB_X_AALG_SHA2_384
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_384,
+#endif
+	.integ_netlink_xfrm_name = "hmac(sha384)",
+	.integ_tcpdump_name = "sha384",
+	.integ_kernel_audit_name = "HMAC_SHA2_384",
+};
+
+const CK_RSA_PKCS_PSS_PARAMS rsa_pss_sha2_384 = {
+	.hashAlg = CKM_SHA384,
+	.mgf = CKG_MGF1_SHA384,
+	.sLen = SHA2_384_DIGEST_SIZE,
+};
+
+static const uint8_t size_blob_384[ASN1_LEN_ALGO_IDENTIFIER] = LEN_RSA_PSS_SHA2_BLOB;
+static const uint8_t asn1_blob_384[ASN1_SHA2_RSA_PSS_SIZE] = RSA_PSS_SHA384_BLOB;
+
+const struct asn1_hash_blob asn1_rsa_pss_sha2_384 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_384,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_384,
+	.asn1_blob_len = ASN1_SHA2_RSA_PSS_SIZE,
+	.asn1_blob = asn1_blob_384,
 };
 
 const struct hash_desc ike_alg_hash_sha2_512 = {
@@ -192,7 +251,7 @@ const struct hash_desc ike_alg_hash_sha2_512 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = -1,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.oid_tag = SEC_OID_SHA512,
@@ -200,7 +259,7 @@ const struct hash_desc ike_alg_hash_sha2_512 = {
 	},
 	.hash_digest_len = SHA2_512_DIGEST_SIZE,
 	.hash_block_size = 128,	/* from RFC 4868 */
-	.hash_ops = &ike_alg_nss_hash_ops,
+	.hash_ops = &ike_alg_hash_nss_ops,
 };
 
 const struct prf_desc ike_alg_prf_sha2_512 = {
@@ -215,7 +274,7 @@ const struct prf_desc ike_alg_prf_sha2_512 = {
 			[IKEv1_ESP_ID] = -1,
 			[IKEv2_ALG_ID] = IKEv2_PRF_HMAC_SHA2_512,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.nss = {
 		.mechanism = CKM_SHA512_HMAC,
@@ -223,7 +282,7 @@ const struct prf_desc ike_alg_prf_sha2_512 = {
 	.prf_key_size = SHA2_512_DIGEST_SIZE,
 	.prf_output_size = SHA2_512_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_512,
-	.prf_ops = &ike_alg_nss_prf_ops,
+	.prf_ops = &ike_alg_prf_nss_ops,
 };
 
 const struct integ_desc ike_alg_integ_sha2_512 = {
@@ -238,10 +297,36 @@ const struct integ_desc ike_alg_integ_sha2_512 = {
 			[IKEv1_ESP_ID] = AUTH_ALGORITHM_HMAC_SHA2_512,
 			[IKEv2_ALG_ID] = IKEv2_AUTH_HMAC_SHA2_512_256,
 		},
-		.fips = TRUE,
+		.fips = true,
 	},
 	.integ_keymat_size = SHA2_512_DIGEST_SIZE,
 	.integ_output_size = SHA2_512_DIGEST_SIZE / 2,
 	.integ_ikev1_ah_transform = AH_SHA2_512,
 	.prf = &ike_alg_prf_sha2_512,
+#ifdef SADB_X_AALG_SHA2_512HMAC
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_512HMAC,
+#endif
+#ifdef SADB_X_AALG_SHA2_512
+	.integ_sadb_aalg_id = SADB_X_AALG_SHA2_512,
+#endif
+	.integ_netlink_xfrm_name = "hmac(sha512)",
+	.integ_tcpdump_name = "sha512",
+	.integ_kernel_audit_name = "HMAC_SHA2_512",
+};
+
+const CK_RSA_PKCS_PSS_PARAMS rsa_pss_sha2_512 = {
+	.hashAlg = CKM_SHA512,
+	.mgf = CKG_MGF1_SHA512,
+	.sLen = SHA2_512_DIGEST_SIZE,
+};
+
+static const uint8_t size_blob_512[ASN1_LEN_ALGO_IDENTIFIER] = LEN_RSA_PSS_SHA2_BLOB;
+static const uint8_t asn1_blob_512[ASN1_SHA2_RSA_PSS_SIZE] = RSA_PSS_SHA512_BLOB;
+
+const struct asn1_hash_blob asn1_rsa_pss_sha2_512 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_512,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_512,
+	.asn1_blob_len = ASN1_SHA2_RSA_PSS_SIZE,
+	.asn1_blob = asn1_blob_512,
 };

@@ -17,16 +17,12 @@
  * for more details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <libreswan.h>
-
-#include "constants.h"
 #include "libserpent/serpent_cbc.h"
+#include "lswcdefs.h"		/* for UNUSED */
 #include "lswlog.h"
 #include "ike_alg.h"
+#include "ike_alg_encrypt.h"
+#include "sadb.h"
 
 #define  SERPENT_CBC_BLOCK_SIZE (128 / BITS_PER_BYTE)
 #define  SERPENT_KEY_MIN_LEN    128
@@ -95,9 +91,15 @@ const struct encrypt_desc ike_alg_encrypt_serpent_cbc =
 		},
 	},
 	.enc_blocksize = SERPENT_CBC_BLOCK_SIZE,
-	.pad_to_blocksize = TRUE,
+	.pad_to_blocksize = true,
 	.wire_iv_size = SERPENT_CBC_BLOCK_SIZE,
 	.keydeflen = SERPENT_KEY_DEF_LEN,
 	.key_bit_lengths = { 256, 192, 128, },
 	.encrypt_ops = &serpent_encrypt_ops,
+#ifdef SADB_X_EALG_SERPENTCBC
+	.encrypt_sadb_ealg_id = SADB_X_EALG_SERPENTCBC,
+#endif
+	.encrypt_netlink_xfrm_name = "serpent",
+	.encrypt_tcpdump_name = "serpent",
+	.encrypt_kernel_audit_name = "SERPENT",
 };
