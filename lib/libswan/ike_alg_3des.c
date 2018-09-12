@@ -27,7 +27,6 @@ const struct encrypt_desc ike_alg_encrypt_3des_cbc =
 		.name = "3des_cbc",
 		.fqn = "3DES_CBC",
 		.names = { "3des", "3des_cbc", },
-		.officname =     "3des",
 		.algo_type =     IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_3DES_CBC,
@@ -51,5 +50,6 @@ const struct encrypt_desc ike_alg_encrypt_3des_cbc =
 #endif
 	.encrypt_netlink_xfrm_name = "des3_ede",
 	.encrypt_tcpdump_name = "3des",
+	.encrypt_ike_audit_name = "3des",
 	.encrypt_kernel_audit_name = "3DES",
 };

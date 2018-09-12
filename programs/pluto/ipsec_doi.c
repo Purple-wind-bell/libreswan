@@ -33,7 +33,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/time.h>           /* for gettimeofday */
 #include <resolv.h>
 
 #include <libreswan.h>
@@ -164,14 +163,14 @@ void unpack_nonce(chunk_t *n, const struct pluto_crypto_req *r)
 	*n = kn->n;
 }
 
-bool ikev1_justship_nonce(chunk_t *n, pb_stream *outs, u_int8_t np,
+bool ikev1_justship_nonce(chunk_t *n, pb_stream *outs, uint8_t np,
 		    const char *name)
 {
 	return ikev1_out_generic_chunk(np, &isakmp_nonce_desc, outs, *n, name);
 }
 
 bool ikev1_ship_nonce(chunk_t *n, struct pluto_crypto_req *r,
-		pb_stream *outs, u_int8_t np,
+		pb_stream *outs, uint8_t np,
 		const char *name)
 {
 	unpack_nonce(n, r);
@@ -238,7 +237,6 @@ void ipsecdoi_initiate(int whack_sock,
 			close_any(whack_sock);
 		}
 	} else if (HAS_IPSEC_POLICY(policy)) {
-
 		if (!IS_ISAKMP_SA_ESTABLISHED(st->st_state)) {
 			/* leave our Phase 2 negotiation pending */
 			add_pending(whack_sock, st, c, policy, try,
@@ -505,7 +503,7 @@ void initialize_new_state(struct state *st,
 
 void send_delete(struct state *st)
 {
-	if (DBGP(IMPAIR_SEND_NO_DELETE)) {
+	if (IMPAIR(SEND_NO_DELETE)) {
 		DBGF(DBG_CONTROL, "IMPAIR: impair-send-no-delete set - not sending Delete/Notify");
 	} else {
 		DBGF(DBG_CONTROL, "#%lu send %s delete notification for %s",
@@ -551,13 +549,13 @@ void lswlog_child_sa_established(struct lswlog *buf, struct state *st)
 		DBGF(DBG_NATT, "NAT-T: encaps is '%s'",
 		     c->encaps == yna_auto ? "auto" : bool_str(c->encaps == yna_yes));
 
-		lswlogf(buf, "%sESP%s%s%s=>0x%08lx <0x%08lx",
+		lswlogf(buf, "%sESP%s%s%s=>0x%08" PRIx32 " <0x%08" PRIx32 "",
 			ini,
 			nat ? "/NAT" : "",
 			esn ? "/ESN" : "",
 			tfc ? "/TFC" : "",
-			(unsigned long)ntohl(st->st_esp.attrs.spi),
-			(unsigned long)ntohl(st->st_esp.our_spi));
+			ntohl(st->st_esp.attrs.spi),
+			ntohl(st->st_esp.our_spi));
 		lswlogf(buf, " xfrm=%s", st->st_esp.attrs.transattrs.ta_encrypt->common.fqn);
 		/* log keylen when it is required and/or "interesting" */
 		if (!st->st_esp.attrs.transattrs.ta_encrypt->keylen_omitted ||
@@ -587,11 +585,11 @@ void lswlog_child_sa_established(struct lswlog *buf, struct state *st)
 	if (st->st_ah.present) {
 		bool esn = st->st_esp.attrs.transattrs.esn_enabled;
 
-		lswlogf(buf, "%sAH%s=>0x%08lx <0x%08lx xfrm=%s",
+		lswlogf(buf, "%sAH%s=>0x%08" PRIx32 " <0x%08" PRIx32 " xfrm=%s",
 			ini,
 			st->st_ah.attrs.transattrs.esn_enabled ? "/ESN" : "",
-			(unsigned long)ntohl(st->st_ah.attrs.spi),
-			(unsigned long)ntohl(st->st_ah.our_spi),
+			ntohl(st->st_ah.attrs.spi),
+			ntohl(st->st_ah.our_spi),
 			st->st_ah.attrs.transattrs.ta_integ->common.fqn);
 
 		ini = " ";
@@ -604,10 +602,10 @@ void lswlog_child_sa_established(struct lswlog *buf, struct state *st)
 	}
 
 	if (st->st_ipcomp.present) {
-		lswlogf(buf, "%sIPCOMP=>0x%08lx <0x%08lx",
+		lswlogf(buf, "%sIPCOMP=>0x%08" PRIx32 " <0x%08" PRIx32,
 			ini,
-			(unsigned long)ntohl(st->st_ipcomp.attrs.spi),
-			(unsigned long)ntohl(st->st_ipcomp.our_spi));
+			ntohl(st->st_ipcomp.attrs.spi),
+			ntohl(st->st_ipcomp.our_spi));
 
 		ini = " ";
 
@@ -645,41 +643,35 @@ void lswlog_child_sa_established(struct lswlog *buf, struct state *st)
 	lswlogs(buf, "}");
 }
 
-static void fmt_isakmp_sa_established(struct state *st, char *sa_details,
-			       size_t sa_details_size)
+void lswlog_ike_sa_established(struct lswlog *buf, struct state *st)
 {
 	passert(st->st_oakley.ta_encrypt != NULL);
 	passert(st->st_oakley.ta_prf != NULL);
 	passert(st->st_oakley.ta_dh != NULL);
+
+	lswlogs(buf, " {auth=");
+	if (st->st_ikev2) {
+		lswlogs(buf, "IKEv2");
+	} else {
+		lswlog_enum_short(buf, &oakley_auth_names, st->st_oakley.auth);
+	}
+
+	lswlogf(buf, " cipher=%s", st->st_oakley.ta_encrypt->common.fqn);
+	if (st->st_oakley.enckeylen > 0) {
+		/* XXX: also check omit key? */
+		lswlogf(buf, "_%d", st->st_oakley.enckeylen);
+	}
+
 	/*
 	 * Note: for IKEv1 and AEAD encrypters,
 	 * st->st_oakley.ta_integ is 'none'!
 	 */
-
-	struct esb_buf anb;
-	const char *auth_name = st->st_ikev2 ? "IKEv2" :
-		enum_show_shortb(&oakley_auth_names, st->st_oakley.auth, &anb);
-
-	const char *prf_common_name = st->st_oakley.ta_prf->common.name;
-
-	char prf_name[30] = "";
-	if (st->st_ikev2) {
-		snprintf(prf_name, sizeof(prf_name),
-			 " prf=%s", prf_common_name);
-	}
-
-	const char *integ_name;
-	char integ_buf[30];
+	lswlogs(buf, " integ=");
 	if (st->st_ikev2) {
 		if (st->st_oakley.ta_integ == &ike_alg_integ_none) {
-			integ_name = "n/a";
+			lswlogs(buf, "n/a");
 		} else {
-			snprintf(integ_buf, sizeof(integ_buf),
-				 "%s_%zu",
-				 st->st_oakley.ta_integ->common.officname,
-				 (st->st_oakley.ta_integ->integ_output_size *
-				  BITS_PER_BYTE));
-			integ_name = integ_buf;
+			lswlogs(buf, st->st_oakley.ta_integ->common.fqn);
 		}
 	} else {
 		/*
@@ -687,17 +679,14 @@ static void fmt_isakmp_sa_established(struct state *st, char *sa_details,
 		 * (always?) NULL.  Display the PRF.  The choice and
 		 * behaviour are historic.
 		 */
-		integ_name = prf_common_name;
+		lswlogs(buf, st->st_oakley.ta_prf->common.fqn);
 	}
 
-	snprintf(sa_details, sa_details_size,
-		 " {auth=%s cipher=%s_%d integ=%s%s group=%s}",
-		 auth_name,
-		 st->st_oakley.ta_encrypt->common.name,
-		 st->st_oakley.enckeylen,
-		 integ_name,
-		 prf_name,
-		 st->st_oakley.ta_dh->common.name);
+	if (st->st_ikev2) {
+		lswlogf(buf, " prf=%s", st->st_oakley.ta_prf->common.fqn);
+	}
+
+	lswlogf(buf, " group=%s}", st->st_oakley.ta_dh->common.fqn);
 
 	/* keep IKE SA statistics */
 	if (st->st_ikev2) {
@@ -712,11 +701,4 @@ static void fmt_isakmp_sa_established(struct state *st, char *sa_details,
 		pstats(ikev1_integ, st->st_oakley.ta_prf->common.id[IKEv1_OAKLEY_ID]);
 		pstats(ikev1_groups, st->st_oakley.ta_dh->group);
 	}
-}
-
-void lswlog_ike_sa_established(struct lswlog *buf, struct state *st)
-{
-	char sadetails[512] = "";
-	fmt_isakmp_sa_established(st, sadetails, sizeof(sadetails));
-	lswlogs(buf, sadetails);
 }

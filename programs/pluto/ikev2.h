@@ -5,6 +5,7 @@
  * Copyright (C) 2012-2013 Paul Wouters <paul@libreswan.org>
  * Copyright (C) 2018 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2017 Andrew Cagney
+ * Copyright (C) 2018 Sahana Prasad <sahana.prasad07@gmail.com>
  */
 
 typedef stf_status crypto_transition_fn(struct state *st, struct msg_digest *md,
@@ -102,13 +103,11 @@ void ikev2_need_esp_or_ah_proposals(struct connection *c,
 
 bool ikev2_emit_sa_proposal(pb_stream *pbs,
 			    const struct ikev2_proposal *proposal,
-			    const chunk_t *local_spi,
-			    enum next_payload_types_ikev2 next_payload_type);
+			    const chunk_t *local_spi);
 
 bool ikev2_emit_sa_proposals(pb_stream *outs,
 			     const struct ikev2_proposals *proposals,
-			     const chunk_t *local_spi,
-			     enum next_payload_types_ikev2 next_payload_type);
+			     const chunk_t *local_spi);
 
 const struct oakley_group_desc *ikev2_proposals_first_dh(const struct ikev2_proposals *proposals);
 
@@ -146,6 +145,14 @@ extern bool ikev2_calculate_rsa_hash(struct state *st,
 				     chunk_t *no_ppk_auth,
 				     enum notify_payload_hash_algorithms hash_algo);
 
+extern bool ikev2_calculate_ecdsa_hash(struct state *st,
+					enum original_role role,
+					unsigned char *idhash,
+					pb_stream *a_pbs,
+					bool calc_no_ppk_auth,
+					chunk_t *no_ppk_auth,
+					enum notify_payload_hash_algorithms hash_algo);
+
 extern bool ikev2_create_psk_auth(enum keyword_authby authby,
 				  const struct state *st,
 				  const unsigned char *idhash,
@@ -153,6 +160,12 @@ extern bool ikev2_create_psk_auth(enum keyword_authby authby,
 				  chunk_t *additional_auth);
 
 extern stf_status ikev2_verify_rsa_hash(struct state *st,
+					enum original_role role,
+					const unsigned char *idhash,
+					pb_stream *sig_pbs,
+					enum notify_payload_hash_algorithms hash_algo);
+
+extern stf_status ikev2_verify_ecdsa_hash(struct state *st,
 					enum original_role role,
 					const unsigned char *idhash,
 					pb_stream *sig_pbs,
@@ -274,7 +287,7 @@ struct state_v2_microcode {
 };
 
 void ikev2_copy_cookie_from_sa(struct ikev2_proposal *accepted_ike_proposal,
-				u_int8_t *cookie);
+				uint8_t *cookie);
 
 void ikev2_ike_sa_established(struct ike_sa *ike,
 			      const struct state_v2_microcode *svm,
@@ -285,8 +298,7 @@ struct ikev2_ipseckey_dns;
 extern stf_status ikev2_process_child_sa_pl(struct msg_digest *md,
 					    bool expect_accepted);
 
-extern bool justship_v2KE(chunk_t *g, const struct oakley_group_desc *group,
-		pb_stream *outs, u_int8_t np);
+extern bool emit_v2KE(chunk_t *g, const struct oakley_group_desc *group, pb_stream *outs);
 
 extern bool is_msg_response(const struct msg_digest *md);
 extern bool is_msg_request(const struct msg_digest *md);
@@ -299,3 +311,4 @@ extern void ikev2_record_newaddr(struct state *st, void *arg_ip);
 extern void ikev2_record_deladdr(struct state *st, void *arg_ip);
 extern void ikev2_addr_change(struct state *st);
 
+void lswlog_v2_stf_status(struct lswlog *buf, unsigned ret);

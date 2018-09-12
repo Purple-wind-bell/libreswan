@@ -35,10 +35,10 @@
 #endif
 
 typedef struct {
-	u_int32_t camellia_Nkey;                     // the number of words in the key input block
-	u_int32_t camellia_Nrnd;                     // the number of cipher rounds
-	u_int32_t camellia_e_key[CAMELLIA_KS_LENGTH];     // the encryption key schedule
-	u_int32_t camellia_d_key[CAMELLIA_KS_LENGTH];     // the decryption key schedule
+	uint32_t camellia_Nkey;                     // the number of words in the key input block
+	uint32_t camellia_Nrnd;                     // the number of cipher rounds
+	uint32_t camellia_e_key[CAMELLIA_KS_LENGTH];     // the encryption key schedule
+	uint32_t camellia_d_key[CAMELLIA_KS_LENGTH];     // the decryption key schedule
 } camellia_context;
 
 const struct encrypt_desc ike_alg_encrypt_camellia_cbc =
@@ -47,7 +47,6 @@ const struct encrypt_desc ike_alg_encrypt_camellia_cbc =
 		.name = "camellia",
 		.fqn = "CAMELLIA_CBC",
 		.names = { "camellia", "camellia_cbc", },
-		.officname = "camellia",
 		.algo_type =   IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_CAMELLIA_CBC,
@@ -69,6 +68,7 @@ const struct encrypt_desc ike_alg_encrypt_camellia_cbc =
 #endif
 	.encrypt_netlink_xfrm_name = "cbc(camellia)",
 	.encrypt_tcpdump_name = "camellia",
+	.encrypt_ike_audit_name = "camellia",
 	.encrypt_kernel_audit_name = "CAMELLIA",
 };
 
@@ -78,7 +78,6 @@ const struct encrypt_desc ike_alg_encrypt_camellia_ctr =
 		.name = "camellia_ctr",
 		.fqn = "CAMELLIA_CTR",
 		.names = { "camellia_ctr", },
-		.officname = "camellia_ctr",
 		.algo_type =   IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_CAMELLIA_CTR,
@@ -92,5 +91,6 @@ const struct encrypt_desc ike_alg_encrypt_camellia_ctr =
 	.keydeflen =    CAMELLIA_KEY_DEF_LEN,
 	.key_bit_lengths = { 256, 192, 128, },
 	.encrypt_tcpdump_name = "camellia_ctr",
+	.encrypt_ike_audit_name = "camellia_ctr",
 	.encrypt_kernel_audit_name = "CAMELLIA_CTR",
 };

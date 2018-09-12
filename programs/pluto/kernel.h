@@ -102,7 +102,7 @@ struct kernel_sa {
 	bool esn;
 	bool decap_dscp;
 	bool nopmtudisc;
-	u_int32_t tfcpad;
+	uint32_t tfcpad;
 	ipsec_spi_t spi;
 	unsigned proto;
 	unsigned int transport_proto;
@@ -134,8 +134,8 @@ struct kernel_sa {
 	IPsecSAref_t refhim;
 
 	int encapsulation;
-	u_int16_t natt_sport, natt_dport;
-	u_int8_t natt_type;
+	uint16_t natt_sport, natt_dport;
+	uint8_t natt_type;
 	ip_address *natt_oa;
 	const char *text_said;
 #ifdef HAVE_LABELED_IPSEC
@@ -151,8 +151,6 @@ struct kernel_sa {
 	 * struct sa_marks *sa_marks;
 	 */
 };
-
-extern const struct kernel_sa empty_sa;	/* zero or null in all the right places */
 
 struct raw_iface {
 	ip_address addr;
@@ -247,6 +245,7 @@ struct kernel_ops {
 	err_t (*migrate_sa_check)(void);
 	bool (*migrate_sa)(struct state *st);
 	bool (*v6holes)();
+	bool (*poke_ipsec_policy_hole)(struct raw_iface *ifp, int fd);
 };
 
 extern int create_socket(struct raw_iface *ifp, const char *v_name, int port);
@@ -442,8 +441,6 @@ extern const struct kernel_ops klips_kernel_ops;
 extern const struct kernel_ops mast_kernel_ops;
 #endif
 
-extern bool kernel_overlap_supported(void);
-extern const char *kernel_if_name(void);
 extern void show_kernel_interface(void);
 extern void free_kernelfd(void);
 extern void expire_bare_shunts(void);

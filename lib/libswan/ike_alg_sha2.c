@@ -4,7 +4,7 @@
  * Copyright (C) 2013 Florian Weimer <fweimer@redhat.com>
  * Copyright (C) 2013 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2016 Andrew Cagney <cagney@gnu.org>
- * Copyright (C) 2016 Sahana Prasad <sahana.prasad07@gmail.com>
+ * Copyright (C) 2016-2018 Sahana Prasad <sahana.prasad07@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -35,7 +35,6 @@ const struct hash_desc ike_alg_hash_sha2_256 = {
 		.name = "sha2_256",
 		.fqn = "SHA2_256",
 		.names = { "sha2", "sha256", "sha2_256", },
-		.officname = "sha256",
 		.algo_type = IKE_ALG_HASH,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_256,
@@ -48,7 +47,7 @@ const struct hash_desc ike_alg_hash_sha2_256 = {
 		.oid_tag = SEC_OID_SHA256,
 		.derivation_mechanism = CKM_SHA256_KEY_DERIVATION,
 	},
-	.hash_digest_len = SHA2_256_DIGEST_SIZE,
+	.hash_digest_size = SHA2_256_DIGEST_SIZE,
 	.hash_block_size = 64,	/* from RFC 4868 */
 	.hash_ops = &ike_alg_hash_nss_ops,
 };
@@ -58,7 +57,6 @@ const struct prf_desc ike_alg_prf_sha2_256 = {
 		.name = "sha2_256",
 		.fqn = "HMAC_SHA2_256",
 		.names = { "sha2", "sha256", "sha2_256", "hmac_sha2_256", },
-		.officname = "sha256",
 		.algo_type = IKE_ALG_PRF,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_256,
@@ -74,6 +72,7 @@ const struct prf_desc ike_alg_prf_sha2_256 = {
 	.prf_output_size = SHA2_256_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_256,
 	.prf_ops = &ike_alg_prf_nss_ops,
+	.prf_ike_audit_name = "sha256",
 };
 
 const struct integ_desc ike_alg_integ_sha2_256 = {
@@ -81,7 +80,6 @@ const struct integ_desc ike_alg_integ_sha2_256 = {
 		.name = "sha2_256",
 		.fqn = "HMAC_SHA2_256_128",
 		.names = { "sha2", "sha256", "sha2_256", "hmac_sha2_256", "hmac_sha2_256_128", },
-		.officname = "sha256",
 		.algo_type = IKE_ALG_INTEG,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_256,
@@ -102,6 +100,7 @@ const struct integ_desc ike_alg_integ_sha2_256 = {
 #endif
 	.integ_netlink_xfrm_name = "hmac(sha256)",
 	.integ_tcpdump_name = "sha256",
+	.integ_ike_audit_name = "sha256",
 	.integ_kernel_audit_name = "HMAC_SHA2_256",
 };
 
@@ -110,7 +109,6 @@ const struct integ_desc ike_alg_integ_hmac_sha2_256_truncbug = {
 		.name = "hmac_sha2_256_truncbug",
 		.fqn = "HMAC_SHA2_256_TRUNCBUG",
 		.names = { "hmac_sha2_256_truncbug", },
-		.officname = "hmac_sha2_256_truncbug",
 		.algo_type = IKE_ALG_INTEG,
 		.id = {
 			[IKEv1_OAKLEY_ID] = -1,
@@ -127,6 +125,7 @@ const struct integ_desc ike_alg_integ_hmac_sha2_256_truncbug = {
 #endif
 	.integ_netlink_xfrm_name = "hmac(sha256)",
 	.integ_tcpdump_name = "hmac_sha2_256_truncbug",
+	.integ_ike_audit_name = "hmac_sha2_256_truncbug",
 	.integ_kernel_audit_name = "HMAC_SHA2_256_TRUNCBUG",
 };
 
@@ -147,12 +146,22 @@ const struct asn1_hash_blob asn1_rsa_pss_sha2_256 = {
 	.asn1_blob = asn1_blob_256,
 };
 
+static const uint8_t size_blob_ecdsa_256[ASN1_LEN_ALGO_IDENTIFIER] = LEN_ECDSA_SHA2_BLOB;
+static const uint8_t asn1_blob_ecdsa_256[ASN1_SHA2_ECDSA_SIZE] = ECDSA_SHA256_BLOB;
+
+const struct asn1_hash_blob asn1_ecdsa_sha2_256 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_256,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_ecdsa_256,
+	.asn1_blob_len = ASN1_SHA2_ECDSA_SIZE,
+	.asn1_blob = asn1_blob_ecdsa_256,
+};
+
 const struct hash_desc ike_alg_hash_sha2_384 = {
 	.common = {
 		.name = "sha2_384",
 		.fqn = "SHA2_384",
 		.names = { "sha384", "sha2_384", },
-		.officname = "sha384",
 		.algo_type = IKE_ALG_HASH,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_384,
@@ -165,7 +174,7 @@ const struct hash_desc ike_alg_hash_sha2_384 = {
 		.oid_tag = SEC_OID_SHA384,
 		.derivation_mechanism = CKM_SHA384_KEY_DERIVATION,
 	},
-	.hash_digest_len = SHA2_384_DIGEST_SIZE,
+	.hash_digest_size = SHA2_384_DIGEST_SIZE,
 	.hash_block_size = 128,	/* from RFC 4868 */
 	.hash_ops = &ike_alg_hash_nss_ops,
 };
@@ -175,7 +184,6 @@ const struct prf_desc ike_alg_prf_sha2_384 = {
 		.name = "sha2_384",
 		.fqn = "HMAC_SHA2_384",
 		.names = { "sha384", "sha2_384", "hmac_sha2_384", },
-		.officname = "sha384",
 		.algo_type = IKE_ALG_PRF,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_384,
@@ -191,6 +199,7 @@ const struct prf_desc ike_alg_prf_sha2_384 = {
 	.prf_output_size = SHA2_384_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_384,
 	.prf_ops = &ike_alg_prf_nss_ops,
+	.prf_ike_audit_name = "sha384",
 };
 
 const struct integ_desc ike_alg_integ_sha2_384 = {
@@ -198,7 +207,6 @@ const struct integ_desc ike_alg_integ_sha2_384 = {
 		.name = "sha2_384",
 		.fqn = "HMAC_SHA2_384_192",
 		.names = { "sha384", "sha2_384", "hmac_sha2_384", "hmac_sha2_384_192", },
-		.officname =  "sha384",
 		.algo_type = IKE_ALG_INTEG,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_384,
@@ -219,6 +227,7 @@ const struct integ_desc ike_alg_integ_sha2_384 = {
 #endif
 	.integ_netlink_xfrm_name = "hmac(sha384)",
 	.integ_tcpdump_name = "sha384",
+	.integ_ike_audit_name = "sha384",
 	.integ_kernel_audit_name = "HMAC_SHA2_384",
 };
 
@@ -239,12 +248,22 @@ const struct asn1_hash_blob asn1_rsa_pss_sha2_384 = {
 	.asn1_blob = asn1_blob_384,
 };
 
+static const uint8_t size_blob_ecdsa_384[ASN1_LEN_ALGO_IDENTIFIER] = LEN_ECDSA_SHA2_BLOB;
+static const uint8_t asn1_blob_ecdsa_384[ASN1_SHA2_ECDSA_SIZE] = ECDSA_SHA384_BLOB;
+
+const struct asn1_hash_blob asn1_ecdsa_sha2_384 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_384,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_ecdsa_384,
+	.asn1_blob_len = ASN1_SHA2_ECDSA_SIZE,
+	.asn1_blob = asn1_blob_ecdsa_384,
+};
+
 const struct hash_desc ike_alg_hash_sha2_512 = {
 	.common = {
 		.name = "sha2_512",
 		.fqn = "SHA2_512",
 		.names = { "sha512", "sha2_512", },
-		.officname = "sha512",
 		.algo_type = IKE_ALG_HASH,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_512,
@@ -257,7 +276,7 @@ const struct hash_desc ike_alg_hash_sha2_512 = {
 		.oid_tag = SEC_OID_SHA512,
 		.derivation_mechanism = CKM_SHA512_KEY_DERIVATION,
 	},
-	.hash_digest_len = SHA2_512_DIGEST_SIZE,
+	.hash_digest_size = SHA2_512_DIGEST_SIZE,
 	.hash_block_size = 128,	/* from RFC 4868 */
 	.hash_ops = &ike_alg_hash_nss_ops,
 };
@@ -267,7 +286,6 @@ const struct prf_desc ike_alg_prf_sha2_512 = {
 		.name = "sha2_512",
 		.fqn = "HMAC_SHA2_512",
 		.names = { "sha512", "sha2_512", "hmac_sha2_512", },
-		.officname = "sha512",
 		.algo_type = IKE_ALG_PRF,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_512,
@@ -283,6 +301,7 @@ const struct prf_desc ike_alg_prf_sha2_512 = {
 	.prf_output_size = SHA2_512_DIGEST_SIZE,
 	.hasher = &ike_alg_hash_sha2_512,
 	.prf_ops = &ike_alg_prf_nss_ops,
+	.prf_ike_audit_name = "sha512",
 };
 
 const struct integ_desc ike_alg_integ_sha2_512 = {
@@ -290,7 +309,6 @@ const struct integ_desc ike_alg_integ_sha2_512 = {
 		.name = "sha2_512",
 		.fqn = "HMAC_SHA2_512_256",
 		.names = { "sha512", "sha2_512", "hmac_sha2_512", "hmac_sha2_512_256", },
-		.officname =  "sha512",
 		.algo_type = IKE_ALG_INTEG,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_SHA2_512,
@@ -311,6 +329,7 @@ const struct integ_desc ike_alg_integ_sha2_512 = {
 #endif
 	.integ_netlink_xfrm_name = "hmac(sha512)",
 	.integ_tcpdump_name = "sha512",
+	.integ_ike_audit_name = "sha512",
 	.integ_kernel_audit_name = "HMAC_SHA2_512",
 };
 
@@ -329,4 +348,15 @@ const struct asn1_hash_blob asn1_rsa_pss_sha2_512 = {
 	.size_blob = size_blob_512,
 	.asn1_blob_len = ASN1_SHA2_RSA_PSS_SIZE,
 	.asn1_blob = asn1_blob_512,
+};
+
+static const uint8_t size_blob_ecdsa_512[ASN1_LEN_ALGO_IDENTIFIER] = LEN_ECDSA_SHA2_BLOB;
+static const uint8_t asn1_blob_ecdsa_512[ASN1_SHA2_ECDSA_SIZE] = ECDSA_SHA512_BLOB;
+
+const struct asn1_hash_blob asn1_ecdsa_sha2_512 = {
+	.hash_algo = IKEv2_AUTH_HASH_SHA2_512,
+	.size = ASN1_LEN_ALGO_IDENTIFIER,
+	.size_blob = size_blob_ecdsa_512,
+	.asn1_blob_len = ASN1_SHA2_ECDSA_SIZE,
+	.asn1_blob = asn1_blob_ecdsa_512,
 };

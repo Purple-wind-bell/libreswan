@@ -183,7 +183,7 @@ static field_desc ipsec_sit_field[] = {
 struct_desc ipsec_sit_desc = {
 	.name = "IPsec DOI SIT",
 	.fields = ipsec_sit_field,
-	.size = sizeof(u_int32_t),
+	.size = sizeof(uint32_t),
 };
 
 /* ISAKMP Proposal Payload
@@ -1578,7 +1578,7 @@ struct_desc *v2_payload_desc(unsigned p)
 	return v2_payload_descs[q];
 }
 
-void init_pbs(pb_stream *pbs, u_int8_t *start, size_t len, const char *name)
+void init_pbs(pb_stream *pbs, uint8_t *start, size_t len, const char *name)
 {
 	*pbs = (pb_stream) {
 		/* .container = NULL, */
@@ -1602,7 +1602,7 @@ pb_stream chunk_as_pbs(chunk_t chunk, const char *name)
 	return pbs;
 }
 
-void init_out_pbs(pb_stream *pbs, u_int8_t *start, size_t len, const char *name)
+void init_out_pbs(pb_stream *pbs, uint8_t *start, size_t len, const char *name)
 {
 	init_pbs(pbs, start, len, name);
 	memset(start, 0xFA, len);	/* value likely to be unpleasant */
@@ -1635,15 +1635,15 @@ void move_pbs_previous_np(pb_stream *dst, pb_stream *src)
 static err_t enum_enum_checker(
 	const char *struct_name,
 	const field_desc *fp,
-	u_int32_t last_enum)
+	uint32_t last_enum)
 {
 	enum_names *ed = enum_enum_table(fp->desc, last_enum);
 
 	if (ed == NULL) {
-		return builddiag("%s of %s has an unknown type: %lu (0x%lx)",
+		return builddiag("%s of %s has an unknown type: %" PRIu32 " (0x%" PRIx32 ")",
 				 fp->name, struct_name,
-				 (unsigned long)last_enum,
-				 (unsigned long)last_enum);
+				 last_enum,
+				 last_enum);
 	}
 	return NULL;
 }
@@ -1658,15 +1658,15 @@ static void DBG_print_struct(const char *label, const void *struct_ptr,
 		      struct_desc *sd, bool len_meaningful)
 {
 	bool immediate = FALSE;
-	const u_int8_t *inp = struct_ptr;
+	const uint8_t *inp = struct_ptr;
 	field_desc *fp;
-	u_int32_t last_enum = 0;
+	uint32_t last_enum = 0;
 
 	DBG_log("%s%s:", label, sd->name);
 
 	for (fp = sd->fields; fp->field_type != ft_end; fp++) {
 		int i = fp->size;
-		u_int32_t n = 0;
+		uint32_t n = 0;
 
 		switch (fp->field_type) {
 		case ft_zig:		/* zero (ignore violations) */
@@ -1686,13 +1686,13 @@ static void DBG_print_struct(const char *label, const void *struct_ptr,
 			/* grab i bytes */
 			switch (i) {
 			case 8 / BITS_PER_BYTE:
-				n = *(const u_int8_t *)inp;
+				n = *(const uint8_t *)inp;
 				break;
 			case 16 / BITS_PER_BYTE:
-				n = *(const u_int16_t *)inp;
+				n = *(const uint16_t *)inp;
 				break;
 			case 32 / BITS_PER_BYTE:
-				n = *(const u_int32_t *)inp;
+				n = *(const uint32_t *)inp;
 				break;
 			default:
 				bad_case(i);
@@ -1706,9 +1706,10 @@ static void DBG_print_struct(const char *label, const void *struct_ptr,
 					break;
 			/* FALL THROUGH */
 			case ft_nat: /* natural number (may be 0) */
-				DBG_log("   %s: %lu (0x%lx)", fp->name,
-					(unsigned long)n,
-					(unsigned long)n);
+				DBG_log("   %s: %" PRIu32 " (0x%" PRIx32 ")",
+					fp->name,
+					n,
+					n);
 				break;
 
 			case ft_af_loose_enum:  /* Attribute Format + value from an enumeration */
@@ -1722,9 +1723,10 @@ static void DBG_print_struct(const char *label, const void *struct_ptr,
 			case ft_fcp:
 			case ft_pnp:
 				last_enum = n;
-				DBG_log("   %s: %s (0x%lx)", fp->name,
+				DBG_log("   %s: %s (0x%" PRIx32 ")",
+					fp->name,
 					enum_show(fp->desc, n),
-					(unsigned long)n);
+					n);
 				break;
 
 			case ft_loose_enum_enum:
@@ -1733,15 +1735,17 @@ static void DBG_print_struct(const char *label, const void *struct_ptr,
 				const char *name = enum_enum_showb(fp->desc,
 								   last_enum,
 								   n, &buf);
-				DBG_log("   %s: %s (0x%lx)", fp->name,
-					name, (unsigned long)n);
+				DBG_log("   %s: %s (0x%" PRIx32 ")",
+					fp->name,
+					name, n);
 			}
 				break;
 
 			case ft_set: /* bits representing set */
-				DBG_log("   %s: %s (0x%lx)", fp->name,
+				DBG_log("   %s: %s (0x%" PRIx32 ")",
+					fp->name,
 					bitnamesof(fp->desc, n),
-					(unsigned long)n);
+					n);
 				break;
 			default:
 				bad_case(fp->field_type);
@@ -1812,20 +1816,19 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 	       pb_stream *ins, pb_stream *obj_pbs)
 {
 	err_t ugh = NULL;
-	u_int8_t *cur = ins->cur;
+	uint8_t *cur = ins->cur;
 
 	if (ins->roof - cur < (ptrdiff_t)sd->size) {
 		ugh = builddiag("not enough room in input packet for %s (remain=%li, sd->size=%zu)",
 				sd->name, (long int)(ins->roof - cur),
 				sd->size);
 	} else {
-		u_int8_t *roof = cur + sd->size; /* may be changed by a length field */
-		u_int8_t *outp = struct_ptr;
+		uint8_t *roof = cur + sd->size; /* may be changed by a length field */
+		uint8_t *outp = struct_ptr;
 		bool immediate = FALSE;
-		u_int32_t last_enum = 0;
-		field_desc *fp;
+		uint32_t last_enum = 0;
 
-		for (fp = sd->fields; ugh == NULL; fp++) {
+		for (field_desc *fp = sd->fields; ugh == NULL; fp++) {
 			size_t i = fp->size;
 
 			passert(ins->roof - cur >= (ptrdiff_t)i);
@@ -1864,7 +1867,7 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 			case ft_af_loose_enum:  /* Attribute Format + value from an enumeration */
 			case ft_set:            /* bits representing set */
 			{
-				u_int32_t n = 0;
+				uint32_t n = 0;
 
 				/* Reportedly fails on arm, see bug #775 */
 				for (; i != 0; i--)
@@ -1874,7 +1877,7 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 				case ft_len:    /* length of this struct and any following crud */
 				case ft_lv:     /* length/value field of attribute */
 				{
-					u_int32_t len = fp->field_type ==
+					uint32_t len = fp->field_type ==
 							ft_len ? n :
 							immediate ? sd->size :
 							n + sd->size;
@@ -1907,10 +1910,10 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 				/* FALL THROUGH */
 				case ft_enum:   /* value from an enumeration */
 					if (enum_name(fp->desc, n) == NULL) {
-						ugh = builddiag("%s of %s has an unknown value: %lu (0x%lx)",
+						ugh = builddiag("%s of %s has an unknown value: %" PRIu32 " (0x%" PRIx32 ")",
 								fp->name, sd->name,
-								(unsigned long)n,
-								(unsigned long)n);
+								n,
+								n);
 					}
 				/* FALL THROUGH */
 				case ft_loose_enum:     /* value from an enumeration with only some names known */
@@ -1925,10 +1928,10 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 
 				case ft_set:            /* bits representing set */
 					if (!testset(fp->desc, n)) {
-						ugh = builddiag("bitset %s of %s has unknown member(s): %s (0x%lx)",
+						ugh = builddiag("bitset %s of %s has unknown member(s): %s (0x%" PRIx32 ")",
 								fp->name, sd->name,
 								bitnamesof(fp->desc, n),
-								(unsigned long)n);
+								n);
 					}
 					break;
 
@@ -1940,13 +1943,13 @@ bool in_struct(void *struct_ptr, struct_desc *sd,
 				i = fp->size;
 				switch (i) {
 				case 8 / BITS_PER_BYTE:
-					*(u_int8_t *)outp = n;
+					*(uint8_t *)outp = n;
 					break;
 				case 16 / BITS_PER_BYTE:
-					*(u_int16_t *)outp = n;
+					*(uint16_t *)outp = n;
 					break;
 				case 32 / BITS_PER_BYTE:
-					*(u_int32_t *)outp = n;
+					*(uint32_t *)outp = n;
 					break;
 				default:
 					bad_case(i);
@@ -2034,8 +2037,8 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 		pb_stream *outs, pb_stream *obj_pbs)
 {
 	err_t ugh = NULL;
-	const u_int8_t *inp = struct_ptr;
-	u_int8_t *cur = outs->cur;
+	const uint8_t *inp = struct_ptr;
+	uint8_t *cur = outs->cur;
 	bool saw_pnp = FALSE;
 
 	/* do backpatching of previous NP, if called for */
@@ -2096,20 +2099,25 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 			sd->name);
 	} else {
 		bool immediate = FALSE;
-		pb_stream obj;	/* new (child) stream for this struct */
-		field_desc *fp;
-		u_int32_t last_enum = 0;
+		uint32_t last_enum = 0;
 
-		/* until a length field is discovered */
-		obj.lenfld = NULL;
-		obj.lenfld_desc = NULL;
+		/* new child stream for portion of payload after this struct */
+		pb_stream obj = {
+			.container = outs,
+			.desc = sd,
+			.name = sd->name,
 
-		/* until an NP field is discovered */
-		obj.previous_np = NULL;
-		obj.previous_np_field = NULL;
-		obj.previous_np_struct = NULL;
+			/* until a length field is discovered */
+			/* .lenfld = NULL, */
+			/* .lenfld_desc = NULL, */
 
-		for (fp = sd->fields; ugh == NULL; fp++) {
+			/* until an ft_fcp field is discovered */
+			/* .previous_np = NULL, */
+			/* .previous_np_field = NULL, */
+			/* .previous_np_struct = NULL, */
+		};
+
+		for (field_desc *fp = sd->fields; ugh == NULL; fp++) {
 			size_t i = fp->size;
 
 			/* make sure that there is space for the next structure element */
@@ -2164,17 +2172,17 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 			case ft_af_loose_enum:  /* Attribute Format + value from an enumeration */
 			case ft_set:            /* bits representing set */
 			{
-				u_int32_t n;
+				uint32_t n;
 
 				switch (i) {
 				case 8 / BITS_PER_BYTE:
-					n = *(const u_int8_t *)inp;
+					n = *(const uint8_t *)inp;
 					break;
 				case 16 / BITS_PER_BYTE:
-					n = *(const u_int16_t *)inp;
+					n = *(const uint16_t *)inp;
 					break;
 				case 32 / BITS_PER_BYTE:
-					n = *(const u_int32_t *)inp;
+					n = *(const uint32_t *)inp;
 					break;
 				default:
 					bad_case(i);
@@ -2194,10 +2202,10 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 				/* FALL THROUGH */
 				case ft_enum:   /* value from an enumeration */
 					if (enum_name(fp->desc, n) == NULL) {
-						ugh = builddiag("%s of %s has an unknown value: %lu (0x%lx)",
+						ugh = builddiag("%s of %s has an unknown value: %" PRIu32 " (0x%" PRIx32 ")",
 								fp->name, sd->name,
-								(unsigned long)n,
-								(unsigned long)n);
+								n,
+								n);
 					}
 				/* FALL THROUGH */
 				case ft_loose_enum:     /* value from an enumeration with only some names known */
@@ -2247,10 +2255,10 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 
 				case ft_set:            /* bits representing set */
 					if (!testset(fp->desc, n)) {
-						ugh = builddiag("bitset %s of %s has unknown member(s): %s (0x%lx)",
+						ugh = builddiag("bitset %s of %s has unknown member(s): %s (0x%" PRIx32 ")",
 								fp->name, sd->name,
 								bitnamesof(fp->desc, n),
-								(unsigned long)n);
+								n);
 					}
 					break;
 
@@ -2260,7 +2268,7 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 
 				/* emit i low-order bytes of n in network order */
 				while (i-- != 0) {
-					cur[i] = (u_int8_t)n;
+					cur[i] = (uint8_t)n;
 					n >>= BITS_PER_BYTE;
 				}
 				inp += fp->size;
@@ -2287,9 +2295,6 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 
 				passert(cur == outs->cur + sd->size);
 
-				obj.container = outs;
-				obj.desc = sd;
-				obj.name = sd->name;
 				obj.start = outs->cur;
 				obj.cur = cur;
 				obj.roof = outs->roof; /* limit of possible */
@@ -2319,56 +2324,18 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 	return FALSE;
 }
 
-/* Find last complete top-level payload and change its np
- *
- * Note: we must deal with payloads already formatted for the network.
- */
-void out_modify_previous_np(u_int8_t np, pb_stream *outs)
-{
-	u_int8_t *pl = outs->start;
-	size_t left = outs->cur - outs->start;
-
-	passert(left >= NSIZEOF_isakmp_hdr); /* not even room for isakmp_hdr! */
-	if (left == NSIZEOF_isakmp_hdr) {
-		/* no payloads, just the isakmp_hdr: insert np here */
-		passert(pl[NOFFSETOF_isa_np] == ISAKMP_NEXT_NONE ||
-			pl[NOFFSETOF_isa_np] == ISAKMP_NEXT_HASH ||
-			pl[NOFFSETOF_isa_np] == ISAKMP_NEXT_SIG);
-		pl[NOFFSETOF_isa_np] = np;
-	} else {
-		pl += NSIZEOF_isakmp_hdr; /* skip over isakmp_hdr */
-		left -= NSIZEOF_isakmp_hdr;
-		for (;;) {
-			size_t pllen;
-
-			passert(left >= NSIZEOF_isakmp_generic);
-			pllen = (pl[NOFFSETOF_isag_length] << 8) |
-				pl[NOFFSETOF_isag_length + 1];
-			passert(left >= pllen);
-			if (left == pllen) {
-				/* found last top-level payload */
-				pl[NOFFSETOF_isag_np] = np;
-				break; /* done */
-			} else {
-				/* this payload is not the last: scan forward */
-				pl += pllen;
-				left -= pllen;
-			}
-		}
-	}
-}
-
-bool ikev1_out_generic(u_int8_t np, struct_desc *sd,
+bool ikev1_out_generic(uint8_t np, struct_desc *sd,
 		 pb_stream *outs, pb_stream *obj_pbs)
 {
 	passert(sd->fields == isag_fields);
+	passert(sd->pt != ISAKMP_NEXT_NONE);
 	struct isakmp_generic gen = {
 		.isag_np = np,
 	};
 	return out_struct(&gen, sd, outs, obj_pbs);
 }
 
-bool ikev1_out_generic_raw(u_int8_t np, struct_desc *sd,
+bool ikev1_out_generic_raw(uint8_t np, struct_desc *sd,
 		     pb_stream *outs, const void *bytes, size_t len,
 		     const char *name)
 {
@@ -2390,8 +2357,8 @@ bool out_raw(const void *bytes, size_t len, pb_stream *outs, const char *name)
 	 */
 	if (pbs_left(outs) < len) {
 		loglog(RC_LOG_SERIOUS,
-		       "not enough room left to place %lu bytes of %s in %s",
-		       (unsigned long) len, name, outs->name);
+		       "not enough room left to place %zu bytes of %s in %s",
+		       len, name, outs->name);
 		return FALSE;
 	} else {
 		DBG(DBG_EMITTING,
@@ -2458,7 +2425,7 @@ pb_stream open_output_struct_pbs(pb_stream *outs, const void *struct_ptr,
  */
 
 pb_stream reply_stream;
-u_int8_t reply_buffer[MAX_OUTPUT_UDP_SIZE];
+uint8_t reply_buffer[MAX_OUTPUT_UDP_SIZE];
 
 /*
  * Turns out that while the above was correct, the reply_stream still
@@ -2509,7 +2476,7 @@ void restore_reply_pbs(struct pbs_reply_backup **backup)
 void close_output_pbs(pb_stream *pbs)
 {
 	if (pbs->lenfld != NULL) {
-		u_int32_t len = pbs_offset(pbs);
+		uint32_t len = pbs_offset(pbs);
 		int i = pbs->lenfld_desc->size;
 
 		passert(i > 0);
@@ -2517,12 +2484,12 @@ void close_output_pbs(pb_stream *pbs)
 		if (pbs->lenfld_desc->field_type == ft_lv)
 			len -= sizeof(struct isakmp_attribute);
 
-		DBG(DBG_EMITTING, DBG_log("emitting length of %s: %lu",
-					  pbs->name, (unsigned long) len));
+		DBG(DBG_EMITTING, DBG_log("emitting length of %s: %" PRIu32,
+					  pbs->name, len));
 
 		/* emit octets of length in network order */
 		while (i-- != 0) {
-			pbs->lenfld[i] = (u_int8_t)len;
+			pbs->lenfld[i] = (uint8_t)len;
 			len >>= BITS_PER_BYTE;
 		}
 	}

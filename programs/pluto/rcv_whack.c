@@ -196,7 +196,7 @@ static FILE *whackrecordfile = NULL;
  */
 static bool writewhackrecord(char *buf, size_t buflen)
 {
-	u_int32_t header[3];	/* length, high time, low time */
+	uint32_t header[3];	/* length, high time, low time */
 	time_t now = time(NULL);
 
 	/* round up buffer length */
@@ -231,7 +231,7 @@ static bool openwhackrecordfile(char *file)
 {
 	char when[256];
 	char FQDN[SWAN_MAX_DOMAIN_LEN];
-	const u_int32_t magic = WHACK_BASIC_MAGIC;
+	const uint32_t magic = WHACK_BASIC_MAGIC;
 
 	strcpy(FQDN, "unknown host");
 	gethostname(FQDN, sizeof(FQDN));
@@ -424,9 +424,9 @@ void whack_process(int whackfd, const struct whack_message *const m)
 	if (m->whack_crash)
 		delete_states_by_peer(&m->whack_crash_peer);
 
-	if (m->whack_connection)
+	if (m->whack_connection) {
 		add_connection(m);
-
+	}
 	/* update any socket buffer size before calling listen */
 	if (m->ike_buf_size != 0) {
 		pluto_sock_bufsize = m->ike_buf_size;

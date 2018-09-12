@@ -46,7 +46,7 @@ KVM_PREFIXES ?= $(if $(KVM_PREFIX), $(KVM_PREFIX), '')
 KVM_WORKERS ?= 1
 KVM_USER ?= $(shell id -u)
 KVM_GROUP ?= $(shell id -g qemu)
-KVM_MAKEFLAGS ?= USE_EFENCE=false USE_DH31=false
+KVM_MAKEFLAGS ?= USE_EFENCE=false ALL_ALGS=false USE_DH31=false USE_SECCOMP=true USE_LABELED_IPSEC=true
 
 # targets for dumping the above
 .PHONY: print-kvm-prefixes
@@ -83,6 +83,7 @@ VIRSH = sudo virsh --connect $(KVM_CONNECTION)
 
 VIRT_INSTALL ?= sudo virt-install --connect $(KVM_CONNECTION)
 VIRT_CPU ?= --cpu host-passthrough
+VIRT_DISK_SIZE_GB ?=8
 VIRT_RND ?= --rng type=random,device=/dev/random
 VIRT_SECURITY ?= --security type=static,model=dac,label='$(KVM_USER):$(KVM_GROUP)',relabel=yes
 VIRT_GATEWAY ?= --network=network:$(KVM_GATEWAY),model=virtio
@@ -129,21 +130,8 @@ KVM_DOMAINS = $(KVM_BASE_DOMAIN) $(KVM_LOCAL_DOMAINS)
 # what needs to be copied?
 #
 
-# A non-empty KVM_BUILD_COPIES indicates a separate build domain.
-
-KVM_CLONE_COPIES =
-KVM_BUILD_COPIES =
-
-KVM_CLONE_COPIES += $(KVM_BASIC_DOMAINS)
-ifneq ($(filter $(KVM_BUILD_DOMAIN),$(KVM_INSTALL_DOMAINS)),)
-# build is an install domain
-KVM_CLONE_COPIES += $(KVM_INSTALL_DOMAINS)
-else
-# separate build
-KVM_CLONE_COPIES += $(KVM_BUILD_DOMAIN)
-KVM_BUILD_COPIES += $(KVM_INSTALL_DOMAINS)
-endif
-
+KVM_CLONE_COPIES = $(KVM_BASIC_DOMAINS) $(KVM_BUILD_DOMAIN)
+KVM_BUILD_COPIES = $(KVM_INSTALL_DOMAINS)
 
 #
 # Other utilities and directories
@@ -450,9 +438,7 @@ uninstall-kvm-network-$(KVM_GATEWAY):
 
 uninstall-kvm-network-$(KVM_GATEWAY): uninstall-kvm-domain-$(KVM_BASE_DOMAIN)
 uninstall-kvm-network-$(KVM_GATEWAY): uninstall-kvm-domain-$(KVM_CLONE_DOMAIN)
-ifneq ($(KVM_BUILD_COPIES),)
 uninstall-kvm-network-$(KVM_GATEWAY): uninstall-kvm-domain-$(KVM_BUILD_DOMAIN)
-endif
 
 #
 # Test networks.
@@ -583,22 +569,6 @@ define destroy-kvm-domain
 	fi
 endef
 
-define shadow-kvm-disk
-	: shadow-kvm-disk to=$(1) from-domain=$(2)
-	: shutdown from and fix any disk modes - logging into from messes that up
-	$(KVMSH) --shutdown $(2)
-	test -r $(KVM_LOCALDIR)/$(2).qcow2 || sudo chgrp $(KVM_GROUP) $(KVM_LOCALDIR)/$(2).qcow2
-	test -r $(KVM_LOCALDIR)/$(2).qcow2 || sudo chmod g+r          $(KVM_LOCALDIR)/$(2).qcow2
-	: if this test fails, user probably forgot this step:
-	: https://libreswan.org/wiki/Test_Suite#Setting_Users_and_Groups
-	test -r $(KVM_LOCALDIR)/$(2).qcow2
-	: create a shadow - from is used as a backing store
-	rm -f $(1)
-	qemu-img create -f qcow2 \
-		-b $(KVM_LOCALDIR)/$(2).qcow2 \
-		$(1)
-endef
-
 
 #
 # Create the base domain and (as a side effect) the disk image.
@@ -626,7 +596,7 @@ $(KVM_BASEDIR)/$(KVM_BASE_DOMAIN).ks: | $(KVM_ISO) $(KVM_KICKSTART_FILE) $(KVM_G
 		--vcpus=1 \
 		--memory 1024 \
 		--nographics \
-		--disk size=8,cache=writeback,path=$(basename $@).qcow2 \
+		--disk size=$(VIRT_DISK_SIZE_GB),cache=writeback,path=$(basename $@).qcow2 \
 		$(VIRT_CPU) \
 		$(VIRT_GATEWAY) \
 		$(VIRT_RND) \
@@ -667,7 +637,23 @@ $(KVM_LOCALDIR)/$(KVM_CLONE_DOMAIN).qcow2: | $(KVM_LOCALDIR)
 		$@.tmp
 	mv $@.tmp $@
 
-# Create the basic disk images from clone
+# Create the local disk images from clone
+
+define shadow-kvm-disk
+	: shadow-kvm-disk to=$(1) from-domain=$(2)
+	: shutdown from and fix any disk modes - logging into from messes that up
+	$(KVMSH) --shutdown $(2)
+	test -r $(KVM_LOCALDIR)/$(2).qcow2 || sudo chgrp $(KVM_GROUP) $(KVM_LOCALDIR)/$(2).qcow2
+	test -r $(KVM_LOCALDIR)/$(2).qcow2 || sudo chmod g+r          $(KVM_LOCALDIR)/$(2).qcow2
+	: if this test fails, user probably forgot this step:
+	: https://libreswan.org/wiki/Test_Suite#Setting_Users_and_Groups
+	test -r $(KVM_LOCALDIR)/$(2).qcow2
+	: create a shadow - from is used as a backing store
+	rm -f $(1)
+	qemu-img create -f qcow2 \
+		-b $(KVM_LOCALDIR)/$(2).qcow2 \
+		$(1)
+endef
 
 KVM_CLONE_DISK_COPIES = $(addsuffix .qcow2, $(addprefix $(KVM_LOCALDIR)/, $(KVM_CLONE_COPIES)))
 $(KVM_CLONE_DISK_COPIES): | $(KVM_LOCALDIR)/$(KVM_CLONE_DOMAIN).qcow2
@@ -676,14 +662,12 @@ $(KVM_CLONE_DISK_COPIES): | $(KVM_LOCALDIR)/$(KVM_CLONE_DOMAIN).qcow2
 	$(call shadow-kvm-disk,$@.tmp,$(KVM_CLONE_DOMAIN))
 	mv $@.tmp $@
 
-ifneq ($(KVM_BUILD_COPIES),)
 KVM_BUILD_DISK_COPIES = $(addsuffix .qcow2, $(addprefix $(KVM_LOCALDIR)/, $(KVM_BUILD_COPIES)))
 $(KVM_BUILD_DISK_COPIES): | $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).qcow2
 	: copy-build-disk $@
 	$(call check-kvm-qemu-directory)
 	$(call shadow-kvm-disk,$@.tmp,$(KVM_BUILD_DOMAIN))
 	mv $@.tmp $@
-endif
 
 #
 # Create the local domains
@@ -723,7 +707,6 @@ install-kvm-domain-$(KVM_CLONE_DOMAIN): $(KVM_LOCALDIR)/$(KVM_CLONE_DOMAIN).xml
 # $(KVM_CLONE_DOMAIN)'s disk is already in use.
 #
 
-ifneq ($(KVM_BUILD_COPIES),)
 $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml: \
 		| \
 		$(KVM_BASE_GATEWAY_FILE) \
@@ -737,7 +720,6 @@ $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml: \
 	mv $@.tmp $@
 .PHONY: install-kvm-domain-$(KVM_BUILD_DOMAIN)
 install-kvm-domain-$(KVM_BUILD_DOMAIN): $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml
-endif
 
 
 #
@@ -804,10 +786,8 @@ $(foreach domain, $(KVM_LOCAL_DOMAINS), \
 
 $(addprefix uninstall-kvm-domain-, $(KVM_CLONE_DOMAIN)): \
 	$(addprefix uninstall-kvm-domain-, $(KVM_CLONE_COPIES))
-ifneq ($(KVM_BUILD_COPIES),)
 $(addprefix uninstall-kvm-domain-, $(KVM_BUILD_DOMAIN)): \
 	$(addprefix uninstall-kvm-domain-, $(KVM_BUILD_COPIES))
-endif
 
 #
 # Generic kvm-* rules, point at the *-kvm-* primitives defined
@@ -979,11 +959,7 @@ kvm-hive-install: $(foreach domain, $(KVM_INSTALL_DOMAINS), kvm-$(domain)-hive)
 
 # If BUILD is defined, assume the HIVE install should be used.
 .PHONY: kvm-install
-ifneq ($(KVM_BUILD_COPIES),)
 kvm-install: kvm-hive-install
-else
-kvm-install: kvm-all-install
-endif
 
 # Since the install domains list isn't exhaustive (for instance, nic
 # is missing), add an explicit dependency on all the domains so that
@@ -1010,9 +986,7 @@ kvm-install: | $(foreach domain,$(KVM_TEST_DOMAINS),$(KVM_LOCALDIR)/$(domain).xm
 .PHONY: kvm-uninstall
 kvm-uninstall: $(addprefix uninstall-kvm-domain-, $(KVM_INSTALL_DOMAINS))
 kvm-uninstall: $(addprefix uninstall-kvm-domain-, $(KVM_BASIC_DOMAINS))
-ifneq ($(KVM_BUILD_COPIES),)
 kvm-uninstall: $(addprefix uninstall-kvm-domain-, $(KVM_BUILD_DOMAIN))
-endif
 
 
 #
@@ -1043,10 +1017,8 @@ $(foreach host, $(filter-out $(KVM_DOMAINS), $(KVM_HOSTS)), \
 .PHONY: kvmsh-base
 kvmsh-base: kvmsh-$(KVM_BASE_DOMAIN)
 
-ifeq ($(KVM_BUILD_COPIES),)
 .PHONY: kvmsh-build
 kvmsh-build: kvmsh-$(KVM_BUILD_DOMAIN)
-endif
 
 
 #
@@ -1134,7 +1106,7 @@ Configuration:
 	directory for storing the shared base (master) VM;
 	should be relatively permanent storage
     $(call kvm-var-value,KVM_LOCALDIR)$(if $(wildcard $(KVM_LOCALDIR)),, [MISSING])
-    	directory for storing the VMs local to this build tree;
+	directory for storing the VMs local to this build tree;
 	can be temporary storage (for instance /tmp)
     $(call kvm-var-value,KVM_GATEWAY)
 	the shared NATting gateway;

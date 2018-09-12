@@ -86,12 +86,12 @@ static struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 					enum ikev1_auth_method auth_method,
 					bool single_dh);
 
-
 static struct alg_info_ike *ikev1_default_ike_info(void)
 {
 	static const struct proposal_policy policy = {
 		.ikev1 = TRUE,
 		.alg_is_ok = ike_alg_is_ike,
+		.warning = libreswan_log,
 	};
 
 	char err[100];
@@ -269,13 +269,13 @@ struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 				}
 
 				loglog(RC_LOG_SERIOUS,
-				       "transform (%s,%s,%s keylen %ld) ignored.",
+				       "transform (%s,%s,%s keylen %zd) ignored.",
 				       enum_name(&oakley_enc_names,
 						 ike_info->encrypt->common.ikev1_oakley_id),
 				       enum_name(&oakley_hash_names,
 						 ike_info->prf->common.ikev1_oakley_id),
 				       ike_info->dh->common.name,
-				       (long)ike_info->enckeylen);
+				       ike_info->enckeylen);
 				free_sa(&emp_sp);
 			} else {
 				/*
@@ -299,14 +299,12 @@ struct db_sa *oakley_alg_mergedb(struct alg_info_ike *ai,
 		}
 
 		 if (emp_sp != NULL) {
-
 			 /*
 			  * Exclude 3des et.al. which do not include
 			  * default key lengths in the proposal.
 			  */
-			 if (ike_info->enckeylen == 0
-			     && !ike_info->encrypt->keylen_omitted) {
-
+			 if (ike_info->enckeylen == 0 &&
+			     !ike_info->encrypt->keylen_omitted) {
 				const struct encrypt_desc *enc_desc = ike_info->encrypt;
 				int def_ks = enc_desc->keydeflen;
 				passert(def_ks); /* ike=null not supported */

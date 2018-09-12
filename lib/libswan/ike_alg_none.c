@@ -12,6 +12,8 @@
  * for more details.
  */
 
+#include <stdint.h>
+
 #include "ietf_constants.h"
 #include "ike_alg.h"
 #include "ike_alg_encrypt.h"
@@ -32,7 +34,6 @@ const struct encrypt_desc ike_alg_encrypt_null =
 		.name = "null",
 		.fqn = "NULL",
 		.names = { "null", },
-		.officname = "null",
 		.algo_type = IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = -1,
@@ -51,6 +52,7 @@ const struct encrypt_desc ike_alg_encrypt_null =
 #endif
 	.encrypt_netlink_xfrm_name = "cipher_null",
 	.encrypt_tcpdump_name = "null",
+	.encrypt_ike_audit_name = "null",
 	.encrypt_kernel_audit_name = "NULL",
 };
 
@@ -62,7 +64,6 @@ const struct integ_desc ike_alg_integ_none = {
 		.name = "none",
 		.fqn = "NONE",
 		.names = { "none", "null", },
-		.officname = "none",
 		.algo_type = IKE_ALG_INTEG,
 		.id = {
 			/*
@@ -96,6 +97,7 @@ const struct integ_desc ike_alg_integ_none = {
 #endif
 	.integ_netlink_xfrm_name = "digest_null",
 	.integ_tcpdump_name = "none",
+	.integ_ike_audit_name = "none",
 	.integ_kernel_audit_name = "NONE",
 };
 
@@ -107,7 +109,6 @@ const struct oakley_group_desc ike_alg_dh_none = {
 		.name = "NONE",
 		.fqn = "NONE",
 		.names = { "none", "null", "dh0", },
-		.officname = "none",
 		.algo_type = IKE_ALG_DH,
 		.id = {
 			[IKEv1_OAKLEY_ID] = -1,

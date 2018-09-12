@@ -955,7 +955,7 @@ enum ikev2_ts_type {
 #define KEY_IKE 1
 
 /* the following are from RFC 2393/draft-shacham-ippcp-rfc2393bis-05.txt 3.3 */
-typedef u_int16_t cpi_t;
+typedef uint16_t cpi_t;
 #define IPCOMP_CPI_SIZE 2
 #define IPCOMP_FIRST_NEGOTIATED 256
 #define IPCOMP_LAST_NEGOTIATED 61439
@@ -1062,7 +1062,7 @@ enum ikev1_auth_attribute {
 	AUTH_ALGORITHM_HMAC_SHA2_256_TRUNCBUG = 252,
 };
 
-typedef u_int16_t ipsec_auth_t;
+typedef uint16_t ipsec_auth_t;
 
 /*
  * Oakley Lifetime Type attribute
@@ -1146,7 +1146,7 @@ enum ikev1_encr_attribute  {
  * https://www.iana.org/assignments/ipsec-registry/ipsec-registry.xhtml#ipsec-registry-6
  */
 
-typedef u_int16_t oakley_hash_t;
+typedef uint16_t oakley_hash_t;
 enum ikev1_hash_attribute  {
 	/* 0 reserved */
 	OAKLEY_MD5 = 1,
@@ -1206,7 +1206,7 @@ enum ikev1_auth_method {
 
 
 /* typedef to make our life easier */
-typedef u_int16_t oakley_auth_t;
+typedef uint16_t oakley_auth_t;
 
 enum ikev2_cp_attribute_type {
 	/*
@@ -1549,6 +1549,7 @@ enum ppk_id_type {
 enum pubkey_alg {
 	PUBKEY_ALG_DSA = 1,
 	PUBKEY_ALG_RSA = 2,
+	PUBKEY_ALG_ECDSA = 3,
 };
 
 /*
@@ -1793,6 +1794,26 @@ enum notify_payload_hash_algorithms {
 
 #define LEN_RSA_PSS_SHA2_BLOB {ASN1_SHA2_RSA_PSS_SIZE}
 #define RSA_SHA1_SIGNED_OCTETS 16
+
+/* ECDSA */
+#define ASN1_SHA1_ECDSA_SIZE 11
+#define ASN1_SHA2_ECDSA_SIZE 12
+
+#define ECDSA_SHA1_BLOB \
+	{0x30, 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x01}
+
+#define ECDSA_SHA256_BLOB \
+	{0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02}
+
+#define ECDSA_SHA384_BLOB \
+	{0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03}
+
+#define ECDSA_SHA512_BLOB \
+	{0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x04}
+
+#define LEN_ECDSA_SHA1_BLOB {ASN1_SHA1_ECDSA_SIZE}
+
+#define LEN_ECDSA_SHA2_BLOB {ASN1_SHA2_ECDSA_SIZE}
 
 /* Limits on size of RSA moduli.
  * The upper bound matches that of DNSSEC (see RFC 2537).

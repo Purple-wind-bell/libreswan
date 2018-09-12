@@ -1125,11 +1125,11 @@ enum ipsec_xmit_value ipsec_xmit_ah(struct ipsec_xmit_state *ixs)
 
 #ifdef CONFIG_KLIPS_ALG
 	if (ixs->ixt_a) {
-
 		if (ixs->ipsp->ips_authalg != AH_SHA && ixs->ipsp->ips_authalg != AH_MD5) {
 			printk("KLIPS AH doesn't support authalg=%d yet\n",ixs->ipsp->ips_authalg);
 			return IPSEC_XMIT_AH_BADALG;
 		}
+
 		if ((buf = kmalloc(sizeof(struct iphdr)+ixs->skb->len, GFP_KERNEL)) == NULL)
 			return IPSEC_XMIT_ERRMEMALLOC;
 
@@ -1866,7 +1866,6 @@ enum ipsec_xmit_value ipsec_xmit_init1(struct ipsec_xmit_state *ixs)
 				ipsec_xmit_trap_count++;
 
 				if (pfkey_acquire(&ixs->ips) == 0) {
-
 					/* note that we succeeded */
 					ipsec_xmit_trap_sendcount++;
 
@@ -1979,7 +1978,6 @@ enum ipsec_xmit_value ipsec_xmit_init1(struct ipsec_xmit_state *ixs)
 				ipsec_xmit_trap_count++;
 
 				if (pfkey_acquire(&ixs->ips) == 0) {
-
 					/* note that we succeeded */
 					ipsec_xmit_trap_sendcount++;
 
@@ -2881,9 +2879,8 @@ enum ipsec_xmit_value ipsec_xmit_send(struct ipsec_xmit_state *ixs)
 			ixs->stats->tx_errors++;
 		printk(KERN_WARNING
 		       "klips_error:ipsec_xmit_send: "
-		       "tried to __skb_pull nh-data=%ld, %d available.  This should never happen, please report.\n",
-		       (unsigned long)(skb_network_header(ixs->skb) -
-				       ixs->skb->data),
+		       "tried to __skb_pull nh-data=%td, %d available.  This should never happen, please report.\n",
+		       skb_network_header(ixs->skb) - ixs->skb->data,
 		       ixs->skb->len);
 		return IPSEC_XMIT_PUSHPULLERR;
 	}
@@ -3060,7 +3057,6 @@ void ipsec_xsm(struct ipsec_xmit_state *ixs)
 
 	more_allowed = 1000;
 	while (ixs->state != IPSEC_XSM_DONE && --more_allowed) {
-
 		ixs->next_state = xmit_state_table[ixs->state].next_state;
 
 		stat = xmit_state_table[ixs->state].action(ixs);

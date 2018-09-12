@@ -436,7 +436,7 @@ deltatime_t crl_check_interval = DELTATIME_INIT(0);
  * This variable specifies (globally!!) which we support: 10 or 32001.
  * ??? surely that makes migration to 32001 all or nothing.
  */
-u_int16_t secctx_attr_type = SECCTX;
+uint16_t secctx_attr_type = SECCTX;
 #endif
 
 /*
@@ -1527,7 +1527,7 @@ int main(int argc, char **argv)
 			loglog(RC_LOG_SERIOUS, "FIPS mode: debug-private disabled as such logging is not allowed");
 		}
 	}
-	if (DBGP(IMPAIR_FORCE_FIPS)) {
+	if (IMPAIR(FORCE_FIPS)) {
 		libreswan_log("Forcing FIPS checks to true to emulate FIPS mode");
 		lsw_set_fips_mode(LSW_FIPS_ON);
 	}

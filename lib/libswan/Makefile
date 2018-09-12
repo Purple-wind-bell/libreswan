@@ -51,7 +51,7 @@ OBJS += constants.o \
 	subnettypeof.o ttoaddr.o ttodata.o ttoprotoport.o \
 	ttorange.o ttosa.o ttosubnet.o ttoul.o \
 	secitem_chunk.o \
-	base64_rsa_pubkey.o \
+	base64_pubkey.o \
 	lswnss.o \
 	lsw_passert_fail.o \
 	alg_byname.o
@@ -59,13 +59,9 @@ OBJS += constants.o \
 ifeq ($(USE_NETKEY),true)
 OBJS += addr_lookup.o
 endif
-OBJS += kernel_alg.o
 
-ifeq ($(USE_KLIPS),true)
+OBJS += kernel_alg.o
 OBJS += kernel_sadb.o
-else ifeq ($(USE_NETKEY),true)
-OBJS += kernel_sadb.o
-endif
 
 # These get pulled in from the klips kernel code.
 VPATH += ${KLIPSSRCDIR}
@@ -113,6 +109,7 @@ OBJS += lswlog_nss_error.o
 OBJS += lswlog_nss_ckm.o
 OBJS += lswlog_nss_ckf.o
 OBJS += lswlog_nss_cka.o
+OBJS += lswlog_nss_secitem.o
 OBJS += lswlog_source_line.o
 OBJS += lswlog_sanitized.o
 OBJS += lswlog_errno.o
@@ -138,8 +135,10 @@ CFLAGS += -I$(top_srcdir)/lib/libcrypto
 OBJS += ike_alg.o
 OBJS += ike_alg_test.o
 OBJS += ike_alg_encrypt_chacha20_poly1305.o
+OBJS += ike_alg_encrypt_nss_aead_ops.o
 OBJS += ike_alg_encrypt_nss_cbc_ops.o
 OBJS += ike_alg_encrypt_nss_ctr_ops.o
+OBJS += ike_alg_encrypt_nss_gcm_ops.o
 OBJS += ike_alg_desc.o
 ifeq ($(USE_3DES),true)
 OBJS += ike_alg_3des.o

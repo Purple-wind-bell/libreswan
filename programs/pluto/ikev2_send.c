@@ -137,9 +137,9 @@ bool ship_v2V(pb_stream *outs, enum next_payload_types_ikev2 np,
 uint8_t build_ikev2_version(void)
 {
 	/* TODO: if bumping, we should also set the Version flag in the ISAKMP header */
-	return ((IKEv2_MAJOR_VERSION + (DBGP(IMPAIR_MAJOR_VERSION_BUMP) ? 1 : 0))
+	return ((IKEv2_MAJOR_VERSION + (IMPAIR(MAJOR_VERSION_BUMP) ? 1 : 0))
 			<< ISA_MAJ_SHIFT) |
-	       (IKEv2_MINOR_VERSION + (DBGP(IMPAIR_MINOR_VERSION_BUMP) ? 1 : 0));
+	       (IKEv2_MINOR_VERSION + (IMPAIR(MINOR_VERSION_BUMP) ? 1 : 0));
 }
 
 uint8_t build_ikev2_critical(bool impair)
@@ -180,16 +180,13 @@ uint8_t build_ikev2_critical(bool impair)
  *    the field must be empty.
  */
 bool ship_v2N(enum next_payload_types_ikev2 np,
-	      u_int8_t critical,
+	      uint8_t critical,
 	      enum ikev2_sec_proto_id protoid,
 	      const chunk_t *spi,
 	      v2_notification_t type,
 	      const chunk_t *n_data,
 	      pb_stream *rbody)
 {
-	struct ikev2_notify n;
-	pb_stream n_pbs;
-
 	/* See RFC 5996 section 3.10 "Notify Payload" */
 	passert(protoid == PROTO_v2_RESERVED || protoid == PROTO_v2_AH || protoid == PROTO_v2_ESP);
 	passert((protoid == PROTO_v2_RESERVED) == (spi->len == 0));
@@ -213,13 +210,14 @@ bool ship_v2N(enum next_payload_types_ikev2 np,
 
 	DBG(DBG_CONTROLMORE, DBG_log("Adding a v2N Payload"));
 
-	zero(&n);	/* OK: no pointer fields */
-
-	n.isan_np = np;
-	n.isan_critical = critical;
-	n.isan_protoid = protoid;
-	n.isan_spisize = spi->len;
-	n.isan_type = type;
+	struct ikev2_notify n = {
+		.isan_np = np,
+		.isan_critical = critical,
+		.isan_protoid = protoid,
+		.isan_spisize = spi->len,
+		.isan_type = type,
+	};
+	pb_stream n_pbs;
 
 	if (!out_struct(&n, &ikev2_notify_desc, rbody, &n_pbs)) {
 		libreswan_log(
@@ -228,7 +226,7 @@ bool ship_v2N(enum next_payload_types_ikev2 np,
 	}
 
 	if (spi->len > 0) {
-		if (!out_chunk(*spi, &n_pbs, "SPI ")) {
+		if (!out_chunk(*spi, &n_pbs, "SPI")) {
 			libreswan_log("error writing SPI to notify payload");
 			return FALSE;
 		}
@@ -564,7 +562,7 @@ void send_v2_notification_invalid_ke(struct msg_digest *md,
 			group->common.name, group->group);
 	});
 	/* convert group to a raw buffer */
-	const u_int16_t gr = htons(group->group);
+	const uint16_t gr = htons(group->group);
 	chunk_t nd;
 	setchunk(nd, (void*)&gr, sizeof(gr));
 
@@ -608,7 +606,7 @@ void send_v2_delete(struct state *const st)
 		pb_stream del_pbs;
 		struct ikev2_delete v2del_tmp;
 		/*
-		 * u_int16_t i, j=0;
+		 * uint16_t i, j=0;
 		 * u_char *spi;
 		 * char spi_buf[1024];
 		 */

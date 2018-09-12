@@ -144,41 +144,48 @@ static stf_status ikev2_emit_ts(pb_stream *outpbs,
 				const struct traffic_selector *ts,
 				enum next_payload_types_ikev2 np)
 {
-	struct ikev2_ts its;
-	struct ikev2_ts1 its1;
 	pb_stream ts_pbs;
-	pb_stream ts_pbs2;
 
-	its.isat_lt = np; /* LT is IKEv1 name? */
-	its.isat_critical = ISAKMP_PAYLOAD_NONCRITICAL;
-	its.isat_num = 1;
+	{
+		struct ikev2_ts its = {
+			.isat_lt = np, /* LT is IKEv1 name? */
+			.isat_critical = ISAKMP_PAYLOAD_NONCRITICAL,
+			.isat_num = 1,
+		};
 
-	if (!out_struct(&its, ts_desc, outpbs, &ts_pbs))
-		return STF_INTERNAL_ERROR;
-
-	switch (ts->ts_type) {
-	case IKEv2_TS_IPV4_ADDR_RANGE:
-		its1.isat1_type = IKEv2_TS_IPV4_ADDR_RANGE;
-		its1.isat1_sellen = 2 * 4 + 8; /* See RFC 5669 SEction 13.3.1, 8 octet header plus 2 ip addresses */
-		break;
-	case IKEv2_TS_IPV6_ADDR_RANGE:
-		its1.isat1_type = IKEv2_TS_IPV6_ADDR_RANGE;
-		its1.isat1_sellen = 2 * 16 + 8; /* See RFC 5669 SEction 13.3.1, 8 octet header plus 2 ip addresses */
-		break;
-	case IKEv2_TS_FC_ADDR_RANGE:
-		DBG_log("IKEv2 Traffic Selector IKEv2_TS_FC_ADDR_RANGE not yet supported");
-		return STF_INTERNAL_ERROR;
-
-	default:
-		DBG_log("IKEv2 Traffic Selector type '%d' not supported",
-			ts->ts_type);
+		if (!out_struct(&its, ts_desc, outpbs, &ts_pbs))
+			return STF_INTERNAL_ERROR;
 	}
 
-	its1.isat1_ipprotoid = ts->ipprotoid;   /* protocol as per local policy*/
-	its1.isat1_startport = ts->startport;   /* ports as per local policy*/
-	its1.isat1_endport = ts->endport;
-	if (!out_struct(&its1, &ikev2_ts1_desc, &ts_pbs, &ts_pbs2))
-		return STF_INTERNAL_ERROR;
+	pb_stream ts_pbs2;
+
+	{
+		struct ikev2_ts1 its1 = {
+			.isat1_ipprotoid = ts->ipprotoid,   /* protocol as per local policy */
+			.isat1_startport = ts->startport,   /* ports as per local policy */
+			.isat1_endport = ts->endport,
+		};
+		switch (ts->ts_type) {
+		case IKEv2_TS_IPV4_ADDR_RANGE:
+			its1.isat1_type = IKEv2_TS_IPV4_ADDR_RANGE;
+			its1.isat1_sellen = 2 * 4 + 8; /* See RFC 5669 SEction 13.3.1, 8 octet header plus 2 ip addresses */
+			break;
+		case IKEv2_TS_IPV6_ADDR_RANGE:
+			its1.isat1_type = IKEv2_TS_IPV6_ADDR_RANGE;
+			its1.isat1_sellen = 2 * 16 + 8; /* See RFC 5669 SEction 13.3.1, 8 octet header plus 2 ip addresses */
+			break;
+		case IKEv2_TS_FC_ADDR_RANGE:
+			DBG_log("IKEv2 Traffic Selector IKEv2_TS_FC_ADDR_RANGE not yet supported");
+			return STF_INTERNAL_ERROR;
+
+		default:
+			DBG_log("IKEv2 Traffic Selector type '%d' not supported",
+				ts->ts_type);
+		}
+
+		if (!out_struct(&its1, &ikev2_ts1_desc, &ts_pbs, &ts_pbs2))
+			return STF_INTERNAL_ERROR;
+	}
 
 	/* now do IP addresses */
 	switch (ts->ts_type) {
@@ -350,7 +357,7 @@ int ikev2_parse_ts(struct payload_digest *const ts_pd,
  * If subset_ok, narrowing our proto 0 to ts_proto is OK (initiator narrowing).
  * Returns 0 for no match, 1 for narrowed match, 255 for exact match.
  */
-static int ikev2_match_protocol(u_int8_t proto, u_int8_t ts_proto,
+static int ikev2_match_protocol(uint8_t proto, uint8_t ts_proto,
 	bool superset_ok, bool subset_ok, const char *which, int index)
 {
 	int f = 0;	/* strength of match */
@@ -452,11 +459,11 @@ int ikev2_evaluate_connection_protocol_fit(const struct connection *d,
  * If subset_ok, narrowing our port range to ts port range is OK (initiator narrowing).
  * Returns 0 if no match; otherwise number of ports within match
  */
-static int ikev2_match_port_range(u_int16_t port, struct traffic_selector ts,
+static int ikev2_match_port_range(uint16_t port, struct traffic_selector ts,
 	bool superset_ok, bool subset_ok, const char *which, int index)
 {
-	u_int16_t low = port;
-	u_int16_t high = port == 0 ? 65535 : port;
+	uint16_t low = port;
+	uint16_t high = port == 0 ? 65535 : port;
 	int f = 0;	/* strength of match */
 	const char *m = "no";
 
@@ -852,7 +859,7 @@ stf_status ikev2_resp_accept_child_ts(
 						    d->name));
 					int bfit_p =
 						ikev2_evaluate_connection_port_fit(
-							d, sra, role,
+							d, sr, role,
 							tsi, tsr,
 							tsi_n, tsr_n,
 							&best_tsi_i,
@@ -866,7 +873,7 @@ stf_status ikev2_resp_accept_child_ts(
 							    best_tsr_i));
 						int bfit_pr =
 							ikev2_evaluate_connection_protocol_fit(
-								d, sra, role,
+								d, sr, role,
 								tsi, tsr,
 								tsi_n, tsr_n,
 								&best_tsi_i,
@@ -911,7 +918,6 @@ stf_status ikev2_resp_accept_child_ts(
 		DBG(DBG_CONTROLMORE, DBG_log("failed to find anything; can we instantiate another template?"));
 
 		for (struct connection *t = connections; t != NULL; t = t->ac_next) {
-
 			if (LIN(POLICY_GROUPINSTANCE, t->policy) && (t->kind == CK_TEMPLATE)) {
 				/* ??? clang 6.0.0 thinks best might be NULL but I don't see how */
 				if (!streq(t->foodgroup, best->foodgroup) ||
@@ -1006,7 +1012,7 @@ static stf_status ikev2_cp_reply_state(const struct msg_digest *md,
 	ip_address ipv4;
 	struct connection *c = md->st->st_connection;
 
-	err_t e = lease_an_address(c, &ipv4);
+	err_t e = lease_an_address(c, md->st, &ipv4);
 	if (e != NULL) {
 		libreswan_log("ikev2 lease_an_address failure %s", e);
 		return STF_INTERNAL_ERROR;
@@ -1133,11 +1139,6 @@ stf_status ikev2_child_sa_respond(struct msg_digest *md,
 
 	/* start of SA out */
 	{
-		enum next_payload_types_ikev2 next_payload_type =
-			(isa_xchg == ISAKMP_v2_CREATE_CHILD_SA
-			 ? ISAKMP_NEXT_v2Nr
-			 : ISAKMP_NEXT_v2TSi);
-
 		/* ??? this code won't support AH + ESP */
 		struct ipsec_proto_info *proto_info
 			= ikev2_child_sa_proto_info(cst, c->policy);
@@ -1151,7 +1152,7 @@ stf_status ikev2_child_sa_respond(struct msg_digest *md,
 				sizeof(proto_info->our_spi));
 		if (!ikev2_emit_sa_proposal(outpbs,
 					cst->st_accepted_esp_or_ah_proposal,
-					&local_spi, next_payload_type)) {
+					&local_spi)) {
 			DBG(DBG_CONTROL, DBG_log("problem emitting accepted proposal (%d)", ret));
 			return STF_INTERNAL_ERROR;
 		}
@@ -1159,31 +1160,24 @@ stf_status ikev2_child_sa_respond(struct msg_digest *md,
 
 	if (isa_xchg == ISAKMP_v2_CREATE_CHILD_SA) {
 		/* send NONCE */
-		struct ikev2_generic in;
+		struct ikev2_generic in = {
+			.isag_critical = build_ikev2_critical(false),
+		};
 		pb_stream pb_nr;
-
-		zero(&in);	/* OK: no pointer fields */
-		in.isag_np = (md->chain[ISAKMP_NEXT_v2KE] != NULL) ?
-			ISAKMP_NEXT_v2KE: ISAKMP_NEXT_v2TSi;
-
-		in.isag_critical = ISAKMP_PAYLOAD_NONCRITICAL;
-		if (DBGP(IMPAIR_SEND_BOGUS_ISAKMP_FLAG)) {
-			libreswan_log(" setting bogus ISAKMP_PAYLOAD_LIBRESWAN_BOGUS flag in ISAKMP payload");
-			in.isag_critical |= ISAKMP_PAYLOAD_LIBRESWAN_BOGUS;
-		}
 		if (!out_struct(&in, &ikev2_nonce_desc, outpbs, &pb_nr) ||
-				!out_chunk(cst->st_nr, &pb_nr, "IKEv2 nonce"))
+		    !out_chunk(cst->st_nr, &pb_nr, "IKEv2 nonce"))
 			return STF_INTERNAL_ERROR;
 
 		close_output_pbs(&pb_nr);
 
-		if (in.isag_np == ISAKMP_NEXT_v2KE)  {
-			if (!justship_v2KE(&cst->st_gr,
-						cst->st_oakley.ta_dh, outpbs,
-						ISAKMP_NEXT_v2TSi))
+		/*
+		 * XXX: shoudn't this be conditional on the local end
+		 * having computed KE and not what the remote sent?
+		 */
+		if (md->chain[ISAKMP_NEXT_v2KE] != NULL)  {
+			if (!emit_v2KE(&cst->st_gr, cst->st_oakley.ta_dh, outpbs))
 				return STF_INTERNAL_ERROR;
 		}
-
 	}
 
 	if (role == ORIGINAL_RESPONDER) {
@@ -1273,7 +1267,6 @@ stf_status ikev2_child_sa_respond(struct msg_digest *md,
 	}
 
 	if (role == ORIGINAL_RESPONDER) {
-
 		if (cst->st_seen_use_transport) {
 			if (c->policy & POLICY_TUNNEL) {
 				libreswan_log("Local policy is tunnel mode - ignoring request for transport mode");

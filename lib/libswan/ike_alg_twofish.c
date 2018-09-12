@@ -28,13 +28,13 @@
 #include "sadb.h"
 
 static void do_twofish(const struct encrypt_desc *alg UNUSED,
-		       u_int8_t *buf, size_t buf_size, PK11SymKey *key,
-		       u_int8_t *iv, bool enc)
+		       uint8_t *buf, size_t buf_size, PK11SymKey *key,
+		       uint8_t *iv, bool enc)
 {
 	twofish_context twofish_ctx;
 	char iv_bak[TWOFISH_CBC_BLOCK_SIZE];
 	char *new_iv = NULL;    /* logic will avoid copy to NULL */
-	u_int8_t *bare_key_ptr;
+	uint8_t *bare_key_ptr;
 	size_t bare_key_len;
 
 	/* unpack key from PK11SymKey (or crash!) */
@@ -84,7 +84,6 @@ const struct encrypt_desc ike_alg_encrypt_twofish_cbc =
 		.name = "twofish",
 		.fqn = "TWOFISH_CBC",
 		.names = { "twofish", "twofish_cbc", },
-		.officname = "twofish",
 		.algo_type = IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_TWOFISH_CBC,
@@ -103,6 +102,7 @@ const struct encrypt_desc ike_alg_encrypt_twofish_cbc =
 #endif
 	.encrypt_netlink_xfrm_name = "twofish",
 	.encrypt_tcpdump_name = "twofish",
+	.encrypt_ike_audit_name = "twofish",
 	.encrypt_kernel_audit_name = "TWOFISH",
 };
 
@@ -112,7 +112,6 @@ const struct encrypt_desc ike_alg_encrypt_twofish_ssh =
 		.name = "twofish_ssh", /* We don't know if this is right */
 		.fqn = "TWOFISH_SSH", /* We don't know if this is right */
 		.names = { "twofish_ssh", "twofish_cbc_ssh", },
-		.officname = "twofish_ssh", /* We don't know if this is right */
 		.algo_type = IKE_ALG_ENCRYPT,
 		.id = {
 			[IKEv1_OAKLEY_ID] = OAKLEY_TWOFISH_CBC_SSH,
@@ -127,5 +126,6 @@ const struct encrypt_desc ike_alg_encrypt_twofish_ssh =
 	.key_bit_lengths = { 256, 192, 128, },
 	.encrypt_ops = &twofish_encrypt_ops,
 	.encrypt_tcpdump_name = "twofish_ssh", /* We don't know if this is right */
+	.encrypt_ike_audit_name = "twofish_ssh", /* We don't know if this is right */
 	.encrypt_kernel_audit_name = "TWOFISH_SSH", /* We don't know if this is right */
 };

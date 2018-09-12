@@ -84,9 +84,6 @@
 #include "whack.h"              /* for RC_LOG_SERIOUS */
 #include "pluto_crypt.h"        /* cryptographic helper functions */
 #include "udpfromto.h"
-#include <libreswan/pfkeyv2.h>
-#include <libreswan/pfkey.h>
-#include "kameipsec.h"
 
 #include "nat_traversal.h"
 
@@ -386,51 +383,17 @@ int create_socket(struct raw_iface *ifp, const char *v_name, int port)
 	}
 #endif
 
-/*
- * NETKEY requires us to poke an IPsec policy hole that allows IKE packets,
- * unlike KLIPS which implicitly always allows plaintext IKE.
- * This installs one IPsec policy per socket but this function is called for each:
- * IPv4 port 500 and 4500
- * IPv6 port 500
- */
-#if defined(linux) && defined(NETKEY_SUPPORT)
-	if (kern_interface == USE_NETKEY) {
-		struct sadb_x_policy policy;
-		int level, opt;
-
-		zero(&policy);
-		policy.sadb_x_policy_len = sizeof(policy) /
-					   IPSEC_PFKEYv2_ALIGN;
-		policy.sadb_x_policy_exttype = SADB_X_EXT_POLICY;
-		policy.sadb_x_policy_type = IPSEC_POLICY_BYPASS;
-		policy.sadb_x_policy_dir = IPSEC_DIR_INBOUND;
-		policy.sadb_x_policy_id = 0;
-
-		if (addrtypeof(&ifp->addr) == AF_INET6) {
-			level = IPPROTO_IPV6;
-			opt = IPV6_IPSEC_POLICY;
-		} else {
-			level = IPPROTO_IP;
-			opt = IP_IPSEC_POLICY;
-		}
-
-		if (setsockopt(fd, level, opt,
-			       &policy, sizeof(policy)) < 0) {
-			LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
-			close(fd);
-			return -1;
-		}
-
-		policy.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
-
-		if (setsockopt(fd, level, opt,
-			       &policy, sizeof(policy)) < 0) {
-			LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
-			close(fd);
-			return -1;
-		}
+	/*
+	 * NETKEY requires us to poke an IPsec policy hole that allows
+	 * IKE packets, unlike KLIPS which implicitly always allows
+	 * plaintext IKE.  This installs one IPsec policy per socket
+	 * but this function is called for each: IPv4 port 500 and
+	 * 4500 IPv6 port 500
+	 */
+	if (kernel_ops->poke_ipsec_policy_hole != NULL &&
+	    !kernel_ops->poke_ipsec_policy_hole(ifp, fd)) {
+		return -1;
 	}
-#endif
 
 	setportof(htons(port), &ifp->addr);
 	if (bind(fd, sockaddrof(&ifp->addr), sockaddrlenof(&ifp->addr)) < 0) {
@@ -659,7 +622,6 @@ struct pluto_event *pluto_event_add(evutil_socket_t fd, short events,
  */
 void timer_list(void)
 {
-
 	monotime_t nw;
 	struct pluto_event *ev = pluto_events_head;
 
@@ -692,7 +654,6 @@ void timer_list(void)
 					fmt_conn_instance(st->st_connection, cib),
 					st->st_serialno);
 		} else {
-
 			whack_log(RC_LOG, "event %s is %s", ev->ev_name, buf);
 		}
 
@@ -744,7 +705,7 @@ void find_ifaces(bool rm_dead)
 	}
 }
 
-struct iface_port *lookup_iface_ip(ip_address *ip, u_int16_t port)
+struct iface_port *lookup_iface_ip(ip_address *ip, uint16_t port)
 {
 	struct iface_port *p;
 	for (p = interfaces; p != NULL; p = p->next) {
@@ -799,7 +760,7 @@ void show_fips_status(void)
 #else
 		"disabled [support not compiled in]" :
 #endif
-		DBGP(IMPAIR_FORCE_FIPS) ? "enabled [forced]" : "enabled");
+		IMPAIR(FORCE_FIPS) ? "enabled [forced]" : "enabled");
 }
 
 static void huphandler_cb(int unused UNUSED, const short event UNUSED, void *arg UNUSED)
@@ -1225,7 +1186,7 @@ static bool check_msg_errqueue(const struct iface_port *ifp, short interest, con
 
 	while (pfd.revents = 0,
 	       poll(&pfd, 1, -1) > 0 && (pfd.revents & POLLERR)) {
-		u_int8_t buffer[3000]; /* hope that this is big enough */
+		uint8_t buffer[3000]; /* hope that this is big enough */
 		union {
 			struct sockaddr sa;
 			struct sockaddr_in sa_in4;
@@ -1287,8 +1248,8 @@ static bool check_msg_errqueue(const struct iface_port *ifp, short interest, con
 			}
 		} else if (packet_len == (ssize_t)sizeof(buffer)) {
 			libreswan_log(
-				"MSG_ERRQUEUE message longer than %lu bytes; truncated",
-				(unsigned long) sizeof(buffer));
+				"MSG_ERRQUEUE message longer than %zu bytes; truncated",
+				sizeof(buffer));
 		} else if (packet_len >= (ssize_t)sizeof(struct isakmp_hdr)) {
 			sender = find_likely_sender((size_t) packet_len, buffer);
 		}
@@ -1415,10 +1376,18 @@ static bool check_msg_errqueue(const struct iface_port *ifp, short interest, con
 					break;
 				default:
 					snprintf(orname, sizeof(orname),
-						 "invalid origin %lu",
-						 (unsigned long) ee->ee_origin);
+						 "invalid origin %u",
+						 ee->ee_origin);
 					break;
 				}
+
+#define LOG(buf) lswlogf(buf,			\
+	"ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %" PRIu32 ", origin %s]", \
+	ifp->ip_dev->id_rname, ifp->port,	\
+	fromstr,				\
+	offstr,					\
+	strerror(ee->ee_errno),			\
+	ee->ee_errno, orname);
 
 				if (packet_len == 1 && buffer[0] == 0xff &&
 				    (cur_debugging & DBG_NATT) == 0) {
@@ -1451,13 +1420,6 @@ static bool check_msg_errqueue(const struct iface_port *ifp, short interest, con
 					 * explicit parameter to the
 					 * logging system?
 					 */
-#define LOG(buf)	lswlogf(buf, "ERROR: asynchronous network error report on %s (sport=%d)%s, complainant %s: %s [errno %lu, origin %s]", \
-				ifp->ip_dev->id_rname, ifp->port,	\
-				fromstr,				\
-				offstr,					\
-				strerror(ee->ee_errno),			\
-				(unsigned long) ee->ee_errno, orname);
-
 					LSWLOG_STATE(sender, buf) {
 						LOG(buf);
 					}
@@ -1480,9 +1442,9 @@ static bool check_msg_errqueue(const struct iface_port *ifp, short interest, con
 				 * certainly ought to fit in an unsigned long.
 				 */
 				libreswan_log(
-					"unknown cmsg: level %d, type %d, len %lu",
+					"unknown cmsg: level %d, type %d, len %zu",
 					cm->cmsg_level, cm->cmsg_type,
-					(unsigned long) cm->cmsg_len);
+					 cm->cmsg_len);
 			}
 		}
 	}

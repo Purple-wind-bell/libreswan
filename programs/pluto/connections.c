@@ -108,16 +108,16 @@ struct connection *conn_by_name(const char *nm, bool strict, bool quiet)
 {
 	struct connection *p, *prev;
 
-	for (prev = NULL, p = connections;; prev = p, p = p->ac_next) {
+	for (prev = NULL, p = connections; ; prev = p, p = p->ac_next) {
 		if (p == NULL) {
-			if (strict)
-				if (!quiet)
-					whack_log(RC_UNKNOWN_NAME,
-						"no connection named \"%s\"", nm);
+			if (strict && !quiet) {
+				whack_log(RC_UNKNOWN_NAME,
+					"no connection named \"%s\"", nm);
+			}
 			break;
 		}
 		if (streq(p->name, nm) &&
-			(!strict || p->kind != CK_INSTANCE)) {
+		    (!strict || p->kind != CK_INSTANCE)) {
 			if (prev != NULL) {
 				/* remove p from list */
 				prev->ac_next = p->ac_next;
@@ -843,6 +843,7 @@ static void load_end_nss_certificate(const char *which, CERTCertificate *cert,
 			SECKEY_DestroyPublicKey(pk);
 			return;
 		}
+		/* TODO FORCE MINIMUM SIZE ECDSA KEY */
 		SECKEY_DestroyPublicKey(pk);
 	}
 #endif /* FIPS_CHECK */
@@ -860,7 +861,10 @@ static void load_end_nss_certificate(const char *which, CERTCertificate *cert,
 
 	DBG(DBG_X509, DBG_log("loaded %s certificate \'%s\'", which, name));
 
+	/* check for type instead of do both? */
 	add_rsa_pubkey_from_cert(&d_end->id, cert);
+	add_ecdsa_pubkey_from_cert(&d_end->id, cert);
+
 	d_end->cert.ty = CERT_X509_SIGNATURE;
 	d_end->cert.u.nss_cert = cert;
 
@@ -1206,9 +1210,9 @@ static bool preload_wm_cert_secret(const char *side, const char *pubkey,
 static bool preload_wm_cert_secrets(const struct whack_message *wm)
 {
 	return preload_wm_cert_secret("left", wm->left.pubkey,
-				       wm->left.pubkey_type)
-		&& preload_wm_cert_secret("right", wm->right.pubkey,
-					  wm->right.pubkey_type);
+				      wm->left.pubkey_type) &&
+	       preload_wm_cert_secret("right", wm->right.pubkey,
+				      wm->right.pubkey_type);
 }
 
 /* only used by add_connection() */
@@ -1405,6 +1409,12 @@ void add_connection(const struct whack_message *wm)
 						conflict = TRUE;
 					}
 					break;
+				case AUTH_ECDSA:
+					if (auth_pol != POLICY_ECDSA && auth_pol != LEMPTY) {
+						loglog(RC_FATAL, "leftauthby=ecdsa but authby= is not ecdsa");
+						conflict = TRUE;
+					}
+					break;
 				case AUTH_NULL:
 					if (auth_pol != POLICY_AUTH_NULL && auth_pol != LEMPTY) {
 						loglog(RC_FATAL, "leftauthby=null but authby= is not null");
@@ -1557,6 +1567,7 @@ void add_connection(const struct whack_message *wm)
 				.ikev2 = LIN(POLICY_IKEV2_PROPOSE | POLICY_IKEV2_ALLOW, wm->policy),
 				.alg_is_ok = ike_alg_is_ike,
 				.pfs = LIN(POLICY_PFS, wm->policy),
+				.warning = libreswan_log,
 			};
 
 			c->alg_info_ike = alg_info_ike_create_from_str(&proposal_policy, wm->ike,
@@ -1607,6 +1618,7 @@ void add_connection(const struct whack_message *wm)
 				.ikev2 = LIN(POLICY_IKEV2_PROPOSE | POLICY_IKEV2_ALLOW, wm->policy),
 				.alg_is_ok = kernel_alg_is_ok,
 				.pfs = LIN(POLICY_PFS, wm->policy),
+				.warning = libreswan_log,
 			};
 
 			/*
@@ -1814,6 +1826,8 @@ void add_connection(const struct whack_message *wm)
 	if (wm->left.authby == AUTH_UNSET && wm->right.authby == AUTH_UNSET) {
 		if (c->policy & POLICY_RSASIG)
 			c->spd.this.authby = c->spd.that.authby = AUTH_RSASIG;
+		else if (c->policy & POLICY_ECDSA)
+			c->spd.this.authby = c->spd.that.authby = AUTH_ECDSA;
 		else if (c->policy & POLICY_PSK)
 			c->spd.this.authby = c->spd.that.authby = AUTH_PSK;
 		else if (c->policy & POLICY_AUTH_NULL)
@@ -1825,6 +1839,9 @@ void add_connection(const struct whack_message *wm)
 		switch (wm->left.authby) {
 		case AUTH_RSASIG:
 			c->policy |= POLICY_RSASIG;
+			break;
+		case AUTH_ECDSA:
+			c->policy |= POLICY_ECDSA;
 			break;
 		case AUTH_PSK:
 			c->policy |= POLICY_PSK;
@@ -1968,7 +1985,7 @@ void add_connection(const struct whack_message *wm)
  * Caller is responsible for pfreeing name.
  */
 char *add_group_instance(struct connection *group, const ip_subnet *target,
-			 u_int8_t proto , u_int16_t sport , u_int16_t dport)
+			 uint8_t proto , uint16_t sport , uint16_t dport)
 {
 	passert(group->kind == CK_GROUP);
 	passert(oriented(*group));
@@ -2615,7 +2632,6 @@ struct connection *route_owner(struct connection *c,
 			struct connection **erop,
 			struct spd_route **esrp)
 {
-
 	if (!oriented(*c)) {
 		libreswan_log("route_owner: connection no longer oriented - system interface change?");
 		return NULL;
@@ -2773,8 +2789,8 @@ struct connection *route_owner(struct connection *c,
  * the exact value and has included it in req_policy.
  */
 struct connection *find_host_connection(
-	const ip_address *me, u_int16_t my_port,
-	const ip_address *him, u_int16_t his_port,
+	const ip_address *me, uint16_t my_port,
+	const ip_address *him, uint16_t his_port,
 	lset_t req_policy, lset_t policy_exact_mask)
 {
 	DBG(DBG_CONTROLMORE, {
@@ -2805,8 +2821,8 @@ struct connection *find_host_connection(
 }
 
 stf_status ikev2_find_host_connection(struct connection **cp,
-		const ip_address *me, u_int16_t my_port, const ip_address *him,
-		u_int16_t his_port, lset_t policy)
+		const ip_address *me, uint16_t my_port, const ip_address *him,
+		uint16_t his_port, lset_t policy)
 {
 	struct connection *c = find_host_connection(me, my_port, him, his_port,
 						policy, LEMPTY);
@@ -3098,8 +3114,7 @@ struct connection *refine_host_connection(const struct state *st,
 		int opl;
 		int ppl;
 
-		if ((same_id(&c->spd.that.id, peer_id) || (id_is_ipaddr(peer_id)
-			&& c->spd.that.host_type == KH_ANY)) &&
+		if (same_id(&c->spd.that.id, peer_id) &&
 		    peer_ca.ptr != NULL &&
 		    trusted_ca_nss(peer_ca, c->spd.that.ca, &ppl) &&
 		    ppl == 0 &&
@@ -3162,6 +3177,16 @@ struct connection *refine_host_connection(const struct state *st,
 				return c;
 			}
 			break;
+#if 0
+		case AUTH_ECDSA:
+			my_ECDSA_pri = get_RSA_private_key(c);
+			if (my_ECDSA_pri == NULL) {
+				loglog(RC_LOG_SERIOUS, "cannot find ECDSA key");*/
+					/* cannot determine my ECDSA private key, so not switching */
+				return c;
+			}
+			break;*/
+#endif
 		default:
 			/* don't die on bad_case(auth); */
 
@@ -3198,12 +3223,14 @@ struct connection *refine_host_connection(const struct state *st,
 	for (bool wcpip = FALSE;; wcpip = TRUE) {
 		for (; d != NULL; d = d->hp_next) {
 			int wildcards;
-			bool matching_peer_id = match_id(peer_id, &d->spd.that.id, &wildcards) ||
-				(id_is_ipaddr(peer_id) && d->spd.that.host_type == KH_ANY);
+			bool matching_peer_id = match_id(peer_id,
+							&d->spd.that.id,
+							&wildcards);
 
 			int peer_pathlen;
-			bool matching_peer_ca = trusted_ca_nss(peer_ca, d->spd.that.ca,
-						&peer_pathlen);
+			bool matching_peer_ca = trusted_ca_nss(peer_ca,
+							d->spd.that.ca,
+							&peer_pathlen);
 
 			int our_pathlen;
 			bool matching_requested_ca = match_requested_ca(requested_ca,
@@ -3484,10 +3511,10 @@ static bool is_virtual_net_used(struct connection *c,
 						d->kind),
 					buf);
 
-				if (!kernel_overlap_supported()) {
+				if (!kernel_ops->overlap_supported) {
 					libreswan_log(
 						"Kernel method '%s' does not support overlapping IP ranges",
-						kernel_if_name());
+						kernel_ops->kern_name);
 					return TRUE;
 
 				} else if (LIN(POLICY_OVERLAPIP, c->policy) &&
@@ -3573,10 +3600,10 @@ static struct connection *fc_try(const struct connection *c,
 				const struct host_pair *hp,
 				const ip_subnet *our_net,
 				const ip_subnet *peer_net,
-				const u_int8_t our_protocol,
-				const u_int16_t our_port,
-				const u_int8_t peer_protocol,
-				const u_int16_t peer_port)
+				const uint8_t our_protocol,
+				const uint16_t our_port,
+				const uint8_t peer_protocol,
+				const uint16_t peer_port)
 {
 	struct connection *best = NULL;
 	policy_prio_t best_prio = BOTTOM_PRIO;
@@ -3747,10 +3774,10 @@ static struct connection *fc_try_oppo(const struct connection *c,
 				const struct host_pair *hp,
 				const ip_subnet *our_net,
 				const ip_subnet *peer_net,
-				const u_int8_t our_protocol,
-				const u_int16_t our_port,
-				const u_int8_t peer_protocol,
-				const u_int16_t peer_port)
+				const uint8_t our_protocol,
+				const uint16_t our_port,
+				const uint8_t peer_protocol,
+				const uint16_t peer_port)
 {
 	struct connection *best = NULL;
 	policy_prio_t best_prio = BOTTOM_PRIO;
@@ -3850,10 +3877,10 @@ static struct connection *fc_try_oppo(const struct connection *c,
 struct connection *find_client_connection(struct connection *const c,
 					const ip_subnet *our_net,
 					const ip_subnet *peer_net,
-					const u_int8_t our_protocol,
-					const u_int16_t our_port,
-					const u_int8_t peer_protocol,
-					const u_int16_t peer_port)
+					const uint8_t our_protocol,
+					const uint16_t our_port,
+					const uint8_t peer_protocol,
+					const uint16_t peer_port)
 {
 	struct connection *d;
 
@@ -4232,11 +4259,11 @@ void show_one_connection(const struct connection *c)
 
 	fmt_policy_prio(c->prio, prio);
 	whack_log(RC_COMMENT,
-		  "\"%s\"%s:   conn_prio: %s; interface: %s; metric: %lu; mtu: %s; sa_prio:%s; sa_tfc:%s;",
+		  "\"%s\"%s:   conn_prio: %s; interface: %s; metric: %u; mtu: %s; sa_prio:%s; sa_tfc:%s;",
 		  c->name, instance,
 		  prio,
 		  ifn,
-		  (unsigned long)c->metric,
+		  c->metric,
 		  mtustr, sapriostr, satfcstr
 	);
 

@@ -72,7 +72,7 @@
 
 int pfkeyfd = NULL_FD;
 
-typedef u_int32_t pfkey_seq_t;
+typedef uint32_t pfkey_seq_t;
 static pfkey_seq_t pfkey_seq = 0;       /* sequence number for our PF_KEY messages */
 
 
@@ -463,6 +463,84 @@ static void process_pfkey_acquire(pfkey_buf *buf,
 
 }
 
+struct new_klips_mapp_nfo {
+	struct k_sadb_sa *sa;
+	ip_address src, dst;
+	uint16_t sport, dport;
+};
+
+static void nat_t_new_klips_mapp(struct state *st, void *data)
+{
+	struct new_klips_mapp_nfo *nfo = (struct new_klips_mapp_nfo *)data;
+
+	if (st->st_esp.present &&
+	    sameaddr(&st->st_remoteaddr, &nfo->src) &&
+	    st->st_esp.our_spi == nfo->sa->sadb_sa_spi) {
+		nat_traversal_new_mapping(st, &nfo->dst, nfo->dport);
+	}
+}
+
+static void process_pfkey_nat_t_new_mapping(struct sadb_msg *msg UNUSED,
+					    struct sadb_ext *extensions[K_SADB_EXT_MAX + 1])
+{
+	struct new_klips_mapp_nfo nfo;
+	struct sadb_address *srcx =
+		(void *) extensions[K_SADB_EXT_ADDRESS_SRC];
+	struct sadb_address *dstx =
+		(void *) extensions[K_SADB_EXT_ADDRESS_DST];
+	struct sockaddr *srca, *dsta;
+	err_t ugh = NULL;
+
+	nfo.sa = (void *) extensions[K_SADB_EXT_SA];
+
+	if (!nfo.sa || !srcx || !dstx) {
+		libreswan_log("K_SADB_X_NAT_T_NEW_MAPPING message from KLIPS malformed: got NULL params");
+		return;
+	}
+
+	srca = ((struct sockaddr *)(void *)&srcx[1]);
+	dsta = ((struct sockaddr *)(void *)&dstx[1]);
+
+	if (srca->sa_family != AF_INET || dsta->sa_family != AF_INET) {
+		ugh = "only AF_INET supported";
+	} else {
+		initaddr(
+			(const void *) &((const struct sockaddr_in *)srca)->sin_addr,
+			sizeof(((const struct sockaddr_in *)srca)->sin_addr),
+			srca->sa_family, &nfo.src);
+		nfo.sport =
+			ntohs(((const struct sockaddr_in *)srca)->sin_port);
+		initaddr(
+			(const void *) &((const struct sockaddr_in *)dsta)->sin_addr,
+			sizeof(((const struct sockaddr_in *)dsta)->sin_addr),
+			dsta->sa_family, &nfo.dst);
+		nfo.dport =
+			ntohs(((const struct sockaddr_in *)dsta)->sin_port);
+
+		DBG(DBG_NATT, {
+			char text_said[SATOT_BUF];
+			ip_said said;
+			ipstr_buf bs;
+			ipstr_buf bd;
+
+			initsaid(&nfo.src, nfo.sa->sadb_sa_spi, SA_ESP,
+				&said);
+			satot(&said, 0, text_said, SATOT_BUF);
+			DBG_log("new klips mapping %s %s:%d %s:%d",
+				text_said,
+				ipstr(&nfo.src, &bs), nfo.sport,
+				ipstr(&nfo.dst, &bd), nfo.dport);
+		});
+
+		for_each_state(nat_t_new_klips_mapp, &nfo);
+	}
+
+	if (ugh != NULL)
+		libreswan_log(
+			"K_SADB_X_NAT_T_NEW_MAPPING message from KLIPS malformed: %s",
+			ugh);
+}
+
 /* Handle PF_KEY messages from the kernel that are not dealt with
  * synchronously.  In other words, all but responses to PF_KEY messages
  * that we sent.
@@ -571,8 +649,8 @@ static bool pfkey_build(int error,
 }
 
 /* pfkey_extensions_init + pfkey_build + pfkey_msg_hdr_build */
-static bool pfkey_msg_start(u_int8_t msg_type,
-			    u_int8_t satype,
+static bool pfkey_msg_start(uint8_t msg_type,
+			    uint8_t satype,
 			    const char *description,
 			    const char *text_said,
 			    struct sadb_ext *extensions[K_SADB_EXT_MAX + 1])
@@ -584,7 +662,7 @@ static bool pfkey_msg_start(u_int8_t msg_type,
 }
 
 /* pfkey_build + pfkey_address_build */
-static bool pfkeyext_address(u_int16_t exttype,
+static bool pfkeyext_address(uint16_t exttype,
 			     const ip_address *address,
 			     const char *description,
 			     const char *text_said,
@@ -681,12 +759,12 @@ logerr:
 					}
 				} else {
 					loglog(RC_LOG_SERIOUS,
-					       "ERROR: pfkey write() of %s message %u for %s %s truncated: %ld instead of %ld",
+					       "ERROR: pfkey write() of %s message %u for %s %s truncated: %zd instead of %zu",
 					       sparse_val_show(pfkey_type_names,
 							pfkey_msg->sadb_msg_type),
 					       pfkey_msg->sadb_msg_seq,
 					       description, text_said,
-					       (long)r, (long)len);
+					       r, len);
 					success = FALSE;
 				}
 
@@ -1804,7 +1882,7 @@ bool pfkey_was_eroute_idle(struct state *st, deltatime_t idle_max)
 			char buf[1024];
 			char *line;
 			char text_said[SATOT_BUF];
-			u_int8_t proto = 0;
+			uint8_t proto = 0;
 			ip_address dst;
 			ip_said said;
 			ipsec_spi_t spi = 0;
@@ -1884,7 +1962,7 @@ void pfkey_set_debug(int cur_debug,
 		     libreswan_keying_debug_func_t debug_func,
 		     libreswan_keying_debug_func_t error_func)
 {
-	pfkey_lib_debug = (cur_debug & DBG_PFKEY ?
+	pfkey_lib_debug = (cur_debug & DBG_KERNEL ?
 			   PF_KEY_DEBUG_PARSE_MAX : PF_KEY_DEBUG_PARSE_NONE);
 
 	pfkey_debug_func = debug_func;

@@ -72,6 +72,7 @@
 #include <secerr.h>
 #include <secport.h>
 #include <time.h>
+#include <blapi.h>
 #include "lswconf.h"
 #include "lswnss.h"
 #include "secrets.h"
@@ -110,6 +111,9 @@ static int print_secrets(struct secret *secret,
 	case PKK_XAUTH:
 		kind = "XAUTH";
 		break;
+	case PKK_ECDSA:
+		kind = "ECDSA";
+		break;
 	default:
 		return 1;
 	}
@@ -145,7 +149,7 @@ void list_psks(void)
 }
 
 /* returns the length of the result on success; 0 on failure */
-int sign_hash(const struct RSA_private_key *k,
+int sign_hash_RSA(const struct RSA_private_key *k,
 		  const u_char *hash_val, size_t hash_len,
 		  u_char *sig_val, size_t sig_len,
 		  enum notify_payload_hash_algorithms hash_algo)
@@ -228,8 +232,7 @@ int sign_hash(const struct RSA_private_key *k,
 				return 0;
 			}
 		}
-	} else {
-		/* Digital signature scheme with rsa-pss*/
+	} else { /* Digital signature scheme with rsa-pss*/
 		CK_RSA_PKCS_PSS_PARAMS mech;
 
 		switch (hash_algo) {
@@ -263,6 +266,97 @@ int sign_hash(const struct RSA_private_key *k,
 	SECKEY_DestroyPrivateKey(privateKey);
 
 	DBG(DBG_CRYPT, DBG_log("RSA_sign_hash: Ended using NSS"));
+	return signature.len;
+}
+
+int sign_hash_ECDSA(const struct ECDSA_private_key *k,
+		    const u_char *hash_val, size_t hash_len,
+		    u_char *sig_val, size_t sig_len,
+		    enum notify_payload_hash_algorithms hash_algo UNUSED)
+{
+	SECKEYPrivateKey *privateKey = NULL;
+	PK11SlotInfo *slot = NULL;
+	DBG(DBG_CRYPT, DBG_log("ECDSA_sign_hash: Started using NSS"));
+
+	slot = PK11_GetInternalKeySlot();
+	if (slot == NULL) {
+		loglog(RC_LOG_SERIOUS,
+		       "ECDSA_sign_hash: Unable to find (slot security) device (err %d)",
+		       PR_GetError());
+		return 0;
+	}
+
+	/* XXX: is there no way to detect if we _need_ to authenticate ?? */
+	if (PK11_Authenticate(slot, PR_FALSE,
+			       lsw_return_nss_password_file_info()) == SECSuccess) {
+		DBG(DBG_CRYPT,
+		    DBG_log("NSS: Authentication to NSS successful"));
+	} else {
+		DBG(DBG_CRYPT,
+		    DBG_log("NSS: Authentication to NSS either failed or not required,if NSS DB without password"));
+	}
+
+	DBG(DBG_CRYPT, DBG_dump("nss", k->pub.ckaid.nss->data, k->pub.ckaid.nss->len));
+
+	CERTCertificate *cert = get_cert_by_ckaid_t_from_nss(k->pub.ckaid);
+
+	LSWDBGP(DBG_MASK, buf) {
+		lswlogf(buf, "got cert form ckaid");
+		lswlog_nss_error(buf);
+	}
+
+	privateKey = PK11_FindKeyByAnyCert(cert, lsw_return_nss_password_file_info());
+	DBGF(DBG_CRYPT, "keyType %d",privateKey->keyType);
+
+	if (privateKey == NULL) {
+		LSWDBGP(DBG_CRYPT, buf) {
+		        lswlogf(buf, "NSS: Can't find the private key from the NSS CKA_ID");
+			lswlog_nss_error(buf);
+		}
+
+		CERTCertificate *cert = get_cert_by_ckaid_t_from_nss(k->pub.ckaid);
+		if (cert == NULL) {
+			loglog(RC_LOG_SERIOUS, "Can't find the certificate or private key from the NSS CKA_ID");
+			return 0;
+		}
+		privateKey = PK11_FindKeyByAnyCert(cert, lsw_return_nss_password_file_info());
+		CERT_DestroyCertificate(cert);
+		if (privateKey == NULL) {
+			loglog(RC_LOG_SERIOUS, "Can't find the private key from the certificate (found using NSS CKA_ID");
+			return 0;
+		}
+	}
+
+	PK11_FreeSlot(slot);
+
+	/* point hash at HASH_VAL */
+	SECItem hash = {
+		.type = siBuffer,
+		.len = hash_len,
+		.data = DISCARD_CONST(uint8_t *, hash_val),
+	};
+
+	/* point signature at the SIG_VAL buffer */
+	SECItem signature = {
+		.type = siBuffer,
+		.len = PK11_SignatureLen(privateKey),
+		.data = sig_val,
+	};
+	DBGF(DBG_CRYPT, "ECDSA signature.len %d", signature.len);
+	passert(signature.len <= sig_len);
+
+	SECStatus s = PK11_Sign(privateKey, &signature, &hash);
+	DBG(DBG_CRYPT, DBG_dump("sig_from_nss", signature.data, signature.len));
+	if (s != SECSuccess) {
+		LSWDBGP(DBG_CRYPT, buf) {
+			lswlogf(buf, "NSS: signing hash using PK11_Sign() failed:");
+			lswlog_nss_error(buf);
+		}
+		return 0;
+	}
+	SECKEY_DestroyPrivateKey(privateKey);
+
+	DBG(DBG_CRYPT, DBG_log("ECDSA_sign_hash: Ended using NSS"));
 	return signature.len;
 }
 
@@ -331,17 +425,17 @@ err_t RSA_signature_verify_nss(const struct RSA_public_key *k,
 	data.type = siBuffer;
 
 	if (hash_algo == 0 /* ikev1*/ ||
-				hash_algo == IKEv2_AUTH_HASH_SHA1 /* old style rsa with SHA1*/) {
-
+	    hash_algo == IKEv2_AUTH_HASH_SHA1 /* old style rsa with SHA1*/) {
 		data.len = (unsigned int)sig_len;
 		data.data = alloc_bytes(data.len, "NSS decrypted signature");
 
 		if (PK11_VerifyRecover(publicKey, &signature, &data,
 				       lsw_return_nss_password_file_info()) ==
-		   SECSuccess ) {
-		       DBG(DBG_CRYPT,
-			   DBG_dump("NSS RSA verify: decrypted sig: ", data.data,
-				     data.len));
+		    SECSuccess ) {
+			LSWDBGP(DBG_CRYPT, buf) {
+				lswlogs(buf, "NSS RSA verify: decrypted sig: ");
+				lswlog_nss_secitem(buf, &data);
+			}
 		} else {
 			DBG(DBG_CRYPT,
 			    DBG_log("NSS RSA verify: decrypting signature is failed"));
@@ -354,7 +448,6 @@ err_t RSA_signature_verify_nss(const struct RSA_public_key *k,
 		}
 
 		pfree(data.data);
-
 	} else {
 		/* Digital signature scheme with RSA-PSS */
 		CK_RSA_PKCS_PSS_PARAMS mech;
@@ -380,15 +473,17 @@ err_t RSA_signature_verify_nss(const struct RSA_public_key *k,
 		memcpy(hash_data , DISCARD_CONST(u_char *, hash_val), hash_len);
 		data.data = hash_data;
 
-		DBG(DBG_CRYPT, DBG_dump("data.data: data.len: ", data.data,
-					data.len));
+		LSWDBGP(DBG_CRYPT, buf) {
+			lswlogs(buf, "data: ");
+			lswlog_nss_secitem(buf, &data);
+		}
 
 		if (PK11_VerifyWithMechanism(publicKey, CKM_RSA_PKCS_PSS,  &mechItem, &signature, &data,
-				       lsw_return_nss_password_file_info()) == SECSuccess )
-		{
-		       DBG(DBG_CRYPT,
-			   DBG_dump("NSS RSA verify: decrypted sig: ", data.data,
-			             data.len));
+				       lsw_return_nss_password_file_info()) == SECSuccess) {
+			LSWDBGP(DBG_CRYPT, buf) {
+				lswlogs(buf, "NSS RSA verify: decrypted sig: ");
+				lswlog_nss_secitem(buf, &data);
+			}
 		} else {
 			DBG(DBG_CRYPT,
 			    DBG_log("NSS RSA verify: decrypting signature is failed"));
@@ -421,7 +516,7 @@ err_t RSA_signature_verify_nss(const struct RSA_public_key *k,
  * take_a_crack is a helper function.  Mostly forensic.
  * If only we had coroutines.
  */
-struct tac_state {
+struct tac_state_RSA {
 	/* RSA_check_signature's args that take_a_crack needs */
 	struct state *st;
 	const u_char *hash_val;
@@ -443,7 +538,29 @@ struct tac_state {
 	char *tn;       /* roof of tried[] */
 };
 
-static bool take_a_crack(struct tac_state *s,
+struct tac_state_ECDSA {
+	/* RSA_check_signature's args that take_a_crack needs */
+	struct state *st;
+	const u_char *hash_val;
+	size_t hash_len;
+	const pb_stream *sig_pbs;
+	enum notify_payload_hash_algorithms hash_algo;
+
+	err_t (*try_ECDSA_signature)(const u_char hash_val[MAX_DIGEST_LEN],
+				   size_t hash_len,
+				   const pb_stream *sig_pbs,
+				   struct pubkey *kr,
+				   struct state *st,
+				   enum notify_payload_hash_algorithms hash_algo);
+
+	/* state carried between calls */
+	err_t best_ugh; /* most successful failure */
+	int tried_cnt;  /* number of keys tried */
+	char tried[50]; /* keyids of tried public keys */
+	char *tn;       /* roof of tried[] */
+};
+
+static bool take_a_crack_RSA(struct tac_state_RSA *s,
 			 struct pubkey *kr,
 			 const char *story)
 {
@@ -475,6 +592,38 @@ static bool take_a_crack(struct tac_state *s,
 	}
 }
 
+static bool take_a_crack_ECDSA(struct tac_state_ECDSA *s,
+			 struct pubkey *kr,
+			 const char *story)
+{
+	err_t ugh =
+		(s->try_ECDSA_signature)(s->hash_val, s->hash_len, s->sig_pbs,
+				       kr, s->st, s->hash_algo);
+	const struct ECDSA_public_key *k = &kr->u.ecdsa;
+
+	s->tried_cnt++;
+	if (ugh == NULL) {
+		DBG(DBG_CRYPT | DBG_CONTROL,
+		    DBG_log("an ECDSA Sig check passed with *%s [%s]",
+			    k->keyid, story));
+		return TRUE;
+	} else {
+		DBG(DBG_CRYPT,
+		    DBG_log("an ECDSA Sig check failure %s with *%s [%s]",
+			    ugh + 1, k->keyid, story));
+		if (s->best_ugh == NULL || s->best_ugh[0] < ugh[0])
+			s->best_ugh = ugh;
+		if (ugh[0] > '0' &&
+		    s->tn - s->tried + KEYID_BUF + 2 <
+		    (ptrdiff_t)sizeof(s->tried)) {
+			strcpy(s->tn, " *");
+			strcpy(s->tn + 2, k->keyid);
+			s->tn += strlen(s->tn);
+		}
+		return FALSE;
+	}
+}
+
 stf_status RSA_check_signature_gen(struct state *st,
 				   const u_char hash_val[MAX_DIGEST_LEN],
 				   size_t hash_len,
@@ -489,7 +638,7 @@ stf_status RSA_check_signature_gen(struct state *st,
 					   enum notify_payload_hash_algorithms hash_algo))
 {
 	const struct connection *c = st->st_connection;
-	struct tac_state s;
+	struct tac_state_RSA s;
 
 	s.st = st;
 	s.hash_val = hash_val;
@@ -549,7 +698,7 @@ stf_status RSA_check_signature_gen(struct state *st,
 					continue; /* continue with next public key */
 				}
 
-				if (take_a_crack(&s, key, "preloaded key")) {
+				if (take_a_crack_RSA(&s, key, "preloaded key")) {
 					loglog(RC_LOG_SERIOUS, "Authenticated using RSA");
 					return STF_OK;
 				}
@@ -606,6 +755,137 @@ stf_status RSA_check_signature_gen(struct state *st,
 	}
 }
 
+stf_status ECDSA_check_signature_gen(struct state *st,
+				   const u_char hash_val[MAX_DIGEST_LEN],
+				   size_t hash_len,
+				   const pb_stream *sig_pbs,
+				   enum notify_payload_hash_algorithms hash_algo,
+				   err_t (*try_ECDSA_signature)(
+					   const u_char hash_val[MAX_DIGEST_LEN],
+					   size_t hash_len,
+					   const pb_stream *sig_pbs,
+					   struct pubkey *kr,
+					   struct state *st,
+					   enum notify_payload_hash_algorithms hash_algo))
+{
+	const struct connection *c = st->st_connection;
+	struct tac_state_ECDSA s;
+
+	s.st = st;
+	s.hash_val = hash_val;
+	s.hash_len = hash_len;
+	s.sig_pbs = sig_pbs;
+	s.hash_algo = hash_algo;
+	s.try_ECDSA_signature = try_ECDSA_signature;
+
+	s.best_ugh = NULL;
+	s.tried_cnt = 0;
+	s.tn = s.tried;
+
+	/* try all appropriate Public keys */   /* ASKK */
+	{
+		realtime_t nw = realnow();
+
+		DBG(DBG_CONTROL, {
+			char buf[IDTOA_BUF];
+			dntoa_or_null(buf, IDTOA_BUF, c->spd.that.ca, "%any");
+			DBG_log("required CA is '%s'", buf);
+		});
+
+		struct pubkey_list **pp = &pluto_pubkeys;
+
+		for (struct pubkey_list *p = pluto_pubkeys; p != NULL; p = *pp) {
+			struct pubkey *key = p->key;
+			char printkid[IDTOA_BUF];
+
+			idtoa(&key->id, printkid, IDTOA_BUF);
+			DBG(DBG_CONTROL, {
+				char thatid[IDTOA_BUF];
+				idtoa(&c->spd.that.id, thatid, IDTOA_BUF);
+				DBG_log("checking keyid '%s' for match with '%s'",
+					printkid, thatid);
+			});
+
+			int pl;	/* value ignored */
+
+			if (key->alg == PUBKEY_ALG_ECDSA &&
+		//	    same_id(&c->spd.that.id, &key->id) &&
+			    trusted_ca_nss(key->issuer, c->spd.that.ca, &pl))
+			{
+				DBG(DBG_CONTROL, {
+					char buf[IDTOA_BUF];
+					dntoa_or_null(buf, IDTOA_BUF,
+						key->issuer, "%any");
+					DBG_log("key issuer CA is '%s'", buf);
+				});
+
+				/* check if found public key has expired */
+				if (!is_realtime_epoch(key->until_time) &&
+				    realbefore(key->until_time, nw))
+				{
+					loglog(RC_LOG_SERIOUS,
+					       "cached ECDSA public key has expired and has been deleted");
+					*pp = free_public_keyentry(p);
+					continue; /* continue with next public key */
+				}
+
+				if (take_a_crack_ECDSA(&s, key, "preloaded key")) {
+					loglog(RC_LOG_SERIOUS, "Authenticated using ECDSA");
+					return STF_OK;
+				}
+			}
+			pp = &p->next;
+		}
+	}
+
+	/* if no key was found (evidenced by best_ugh == NULL)
+	 * and that side of connection is key_from_DNS_on_demand
+	 * then go search DNS for keys for peer.
+	 */
+	/* To be re-implemented */
+
+	/* no acceptable key was found: diagnose */
+	{
+		char id_buf[IDTOA_BUF]; /* arbitrary limit on length of ID reported */
+
+		(void) idtoa(&st->st_connection->spd.that.id, id_buf,
+			     sizeof(id_buf));
+
+		if (s.best_ugh == NULL) {
+				loglog(RC_LOG_SERIOUS,
+				       "no ECDSA public key known for '%s'",
+				       id_buf);
+
+			/* ??? is this the best code there is? */
+			return STF_FAIL + INVALID_KEY_INFORMATION;
+		}
+
+		if (s.best_ugh[0] == '9') {
+			loglog(RC_LOG_SERIOUS, "%s", s.best_ugh + 1);
+			/* XXX Could send notification back */
+			return STF_FAIL + INVALID_HASH_INFORMATION;
+		} else {
+			if (s.tried_cnt == 1) {
+				loglog(RC_LOG_SERIOUS,
+				       "ECDSA Signature check (on %s) failed (wrong key?); tried%s",
+				       id_buf, s.tried);
+				DBG(DBG_CONTROL,
+				    DBG_log("public key for %s failed: decrypted SIG payload into a malformed ECB (%s)",
+					    id_buf, s.best_ugh + 1));
+			} else {
+				loglog(RC_LOG_SERIOUS,
+				       "ECDSA Signature check (on %s) failed: tried%s keys but none worked.",
+				       id_buf, s.tried);
+				DBG(DBG_CONTROL,
+				    DBG_log("all %d public keys for %s failed: best decrypted SIG payload into a malformed ECB (%s)",
+					    s.tried_cnt, id_buf,
+					    s.best_ugh + 1));
+			}
+			return STF_FAIL + INVALID_KEY_INFORMATION;
+		}
+	}
+}
+
 /*
  * find the struct secret associated with the combination of
  * me and the peer.  We match the Id (if none, the IP address).
@@ -634,14 +914,26 @@ static struct secret *lsw_get_secret(const struct connection *c,
 		    enum_name(&pkk_names, kind)));
 
 	/* is there a certificate assigned to this connection? */
-	if (kind == PKK_RSA && c->spd.this.cert.ty == CERT_X509_SIGNATURE &&
-			c->spd.this.cert.u.nss_cert != NULL) {
+	if ((kind == PKK_ECDSA || kind == PKK_RSA) &&
+	    c->spd.this.cert.ty == CERT_X509_SIGNATURE &&
+	    c->spd.this.cert.u.nss_cert != NULL) {
+
 		/* Must free MY_PUBLIC_KEY */
-		struct pubkey *my_public_key = allocate_RSA_public_key_nss(
-			c->spd.this.cert.u.nss_cert);
+		struct pubkey *my_public_key;
+		switch (kind) {
+		case PKK_RSA:
+			my_public_key = allocate_RSA_public_key_nss(c->spd.this.cert.u.nss_cert);
+			break;
+		case PKK_ECDSA:
+			my_public_key = allocate_ECDSA_public_key_nss(c->spd.this.cert.u.nss_cert);
+			break;
+		default:
+			bad_case(kind);
+		}
 
 		if (my_public_key == NULL) {
 			loglog(RC_LOG_SERIOUS, "Private key not found (missing or token locked?");
+			/* XXX: ??? */
 			free_public_key(my_public_key);
 			return NULL;
 		}
@@ -671,15 +963,14 @@ static struct secret *lsw_get_secret(const struct connection *c,
 		best = lsw_find_secret_by_public_key(pluto_secrets,
 						     my_public_key, kind);
 		/*
-		 * Just added a secret using the cert as the key; how
-		 * can it then not be found?
+		 * If we don't find the right keytype (RSA, ECDSA, etc)
+		 * then best will end up as NULL
 		 */
-		pexpect(best != NULL);
 		free_public_key(my_public_key);
 		return best;
 	}
 
-	if (his_id_was_instantiated(c) && (!(c->policy & POLICY_AGGRESSIVE)) &&
+	if (remote_id_was_instantiated(c) && !(c->policy & POLICY_AGGRESSIVE) &&
 	    isanyaddr(&c->spd.that.host_addr)) {
 		DBG(DBG_CONTROL,
 		    DBG_log("instantiating him to 0.0.0.0"));
@@ -692,13 +983,13 @@ static struct secret *lsw_get_secret(const struct connection *c,
 		his_id = &rw_id;
 		idtoa(his_id, idhim2, IDTOA_BUF);
 	} else if ((c->policy & POLICY_PSK) &&
-		  (kind == PKK_PSK) &&
-		  (((c->kind == CK_TEMPLATE) &&
-		    (c->spd.that.id.kind == ID_NONE)) ||
-		   ((c->kind == CK_INSTANCE) &&
-		    (id_is_ipaddr(&c->spd.that.id))
+		  kind == PKK_PSK &&
+		  ((c->kind == CK_TEMPLATE &&
+		    c->spd.that.id.kind == ID_NONE) ||
+		   (c->kind == CK_INSTANCE &&
+		    id_is_ipaddr(&c->spd.that.id) &&
 		    /* Check if we are a road warrior instantiation, not a vnet: instantiation */
-		    && (isanyaddr(&c->spd.that.host_addr)))
+		    isanyaddr(&c->spd.that.host_addr))
 		  )
 		  ) {
 		DBG(DBG_CONTROL,
@@ -861,6 +1152,30 @@ const struct RSA_private_key *get_RSA_private_key(const struct connection *c)
 }
 
 /*
+ * find the appropriate ECDSA private key (see get_secret).
+ * Failure is indicated by a NULL pointer.
+ */
+const struct ECDSA_private_key *get_ECDSA_private_key(const struct connection *c)
+{
+	struct secret *s = lsw_get_secret(c,
+					  &c->spd.this.id, &c->spd.that.id,
+					  PKK_ECDSA, TRUE);
+	const struct private_key_stuff *pks = NULL;
+
+	if (s != NULL)
+		pks = lsw_get_pks(s);
+
+	DBG(DBG_CRYPT, {
+		if (s == NULL)
+			DBG_log("no ECDSA key Found");
+		else
+			DBG_log("ecdsa key %s found",
+				pks->u.ECDSA_private_key.pub.keyid);
+	});
+	return s == NULL ? NULL : &pks->u.ECDSA_private_key;
+}
+
+/*
  * public key machinery
  */
 
@@ -873,7 +1188,7 @@ void free_remembered_public_keys(void)
 	free_public_keys(&pluto_pubkeys);
 }
 
-err_t add_public_key(const struct id *id,
+err_t add_public_key(const struct id *id, /* ASKK */
 		     enum dns_auth_level dns_auth_level,
 		     enum pubkey_alg alg,
 		     const chunk_t *key,
@@ -886,6 +1201,16 @@ err_t add_public_key(const struct id *id,
 	case PUBKEY_ALG_RSA:
 	{
 		err_t ugh = unpack_RSA_public_key(&pk->u.rsa, key);
+
+		if (ugh != NULL) {
+			pfree(pk);
+			return ugh;
+		}
+	}
+	break;
+	case PUBKEY_ALG_ECDSA:
+	{
+		err_t ugh = unpack_ECDSA_public_key(&pk->u.ecdsa, key);
 
 		if (ugh != NULL) {
 			pfree(pk);
@@ -910,10 +1235,11 @@ err_t add_public_key(const struct id *id,
 err_t add_ipseckey(const struct id *id,
 		     enum dns_auth_level dns_auth_level,
 		     enum pubkey_alg alg,
-		     u_int32_t ttl, u_int32_t ttl_used,
+		     uint32_t ttl, uint32_t ttl_used,
 		     const chunk_t *key,
 		     struct pubkey_list **head)
 {
+	libreswan_log("add_ipseckey");
 	struct pubkey *pk = alloc_thing(struct pubkey, "ipseckey publickey");
 
 	/* first: algorithm-specific decoding of key chunk */
@@ -921,6 +1247,16 @@ err_t add_ipseckey(const struct id *id,
 	case PUBKEY_ALG_RSA:
 	{
 		err_t ugh = unpack_RSA_public_key(&pk->u.rsa, key);
+
+		if (ugh != NULL) {
+			pfree(pk);
+			return ugh;
+		}
+	}
+	break;
+	case PUBKEY_ALG_ECDSA:
+	{
+		err_t ugh = unpack_ECDSA_public_key(&pk->u.ecdsa, key);
 
 		if (ugh != NULL) {
 			pfree(pk);
@@ -953,14 +1289,14 @@ void list_public_keys(bool utc, bool check_pub_keys)
 
 	if (!check_pub_keys) {
 		whack_log(RC_COMMENT, " ");
-		whack_log(RC_COMMENT, "List of RSA Public Keys:");
+		whack_log(RC_COMMENT, "List of ECDSA Public Keys:");
 		whack_log(RC_COMMENT, " ");
 	}
 
 	while (p != NULL) {
 		struct pubkey *key = p->key;
 
-		if (key->alg == PUBKEY_ALG_RSA) {
+		if (key->alg == PUBKEY_ALG_ECDSA) {
 			const char *check_expiry_msg = check_expiry(key->until_time,
 							PUBKEY_WARNING_INTERVAL,
 							TRUE);
@@ -973,9 +1309,9 @@ void list_public_keys(bool utc, bool check_pub_keys)
 
 				LSWLOG_WHACK(RC_COMMENT, buf) {
 					lswlog_realtime(buf, key->installed_time, utc);
-					lswlogf(buf, ", %4d RSA Key %s (%s private key), until ",
-						8 * key->u.rsa.k,
-						key->u.rsa.keyid,
+					lswlogf(buf, ", %4d ECDSA Key %s (%s private key), until ",
+						8 * key->u.ecdsa.k,
+						key->u.ecdsa.keyid,
 						(has_private_rawkey(key) ? "has" : "no"));
 					lswlog_realtime(buf, key->until_time, utc);
 					lswlogf(buf, " %s", check_expiry_msg);
@@ -1003,10 +1339,12 @@ err_t load_nss_cert_secret(CERTCertificate *cert)
 	if (cert == NULL) {
 		return "NSS cert not found";
 	}
-
 	if (cert_key_is_rsa(cert)) {
 		return lsw_add_rsa_secret(&pluto_secrets, cert);
-	} else {
+	} else if (cert_key_is_ecdsa(cert)) {
+		return lsw_add_ecdsa_secret(&pluto_secrets, cert);
+	}
+	else {
 		return "NSS cert not supported";
 	}
 }
@@ -1014,7 +1352,7 @@ err_t load_nss_cert_secret(CERTCertificate *cert)
 static bool rsa_pubkey_ckaid_matches(struct pubkey *pubkey, char *buf, size_t buflen)
 {
 	if (pubkey->u.rsa.n.ptr == NULL) {
-		DBG_log("RSA pubkey with NULL modulus");
+		DBGF(DBG_CONTROL, "RSA pubkey with NULL modulus");
 		return FALSE;
 	}
 	SECItem modulus = {
@@ -1024,12 +1362,15 @@ static bool rsa_pubkey_ckaid_matches(struct pubkey *pubkey, char *buf, size_t bu
 	};
 	SECItem *pubkey_ckaid = PK11_MakeIDFromPubKey(&modulus);
 	if (pubkey_ckaid == NULL) {
-		DBG_log("RSA pubkey incomputable CKAID");
+		DBGF(DBG_CONTROL, "RSA pubkey incomputable CKAID");
 		return FALSE;
 	}
-	DBG_dump("comparing ckaid with", pubkey_ckaid->data, pubkey_ckaid->len);
-	bool eq = (pubkey_ckaid->len == buflen
-		   && memcmp(pubkey_ckaid->data, buf, buflen) == 0);
+	LSWDBGP(DBG_CONTROL, buf) {
+		lswlogs(buf, "comparing ckaid with: ");
+		lswlog_nss_secitem(buf, pubkey_ckaid);
+	}
+	bool eq = pubkey_ckaid->len == buflen &&
+		  memcmp(pubkey_ckaid->data, buf, buflen) == 0;
 	SECITEM_FreeItem(pubkey_ckaid, PR_TRUE);
 	return eq;
 }
@@ -1055,7 +1396,7 @@ struct pubkey *get_pubkey_with_matching_ckaid(const char *ckaid)
 		switch (key->alg) {
 		case PUBKEY_ALG_RSA: {
 			if (rsa_pubkey_ckaid_matches(key, buf, buflen)) {
-				DBG_log("ckaid matching pubkey");
+				DBGF(DBG_CONTROL, "ckaid matching pubkey");
 				pfree(buf);
 				return key;
 			}

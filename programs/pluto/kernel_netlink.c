@@ -602,8 +602,8 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 	 */
 	if (transport_proto == IPPROTO_ICMP ||
 		transport_proto == IPPROTO_ICMPV6) {
-		u_int16_t icmp_type;
-		u_int16_t icmp_code;
+		uint16_t icmp_type;
+		uint16_t icmp_code;
 
 		icmp_type = ntohs(req.u.p.sel.sport) >> 8;
 		icmp_code = ntohs(req.u.p.sel.sport) & 0xFF;
@@ -839,10 +839,10 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 {
 	const struct connection *const c = st->st_connection;
 
-	const u_int8_t natt_type = (st->hidden_variables.st_nat_traversal & NAT_T_DETECTED) ?
+	const uint8_t natt_type = (st->hidden_variables.st_nat_traversal & NAT_T_DETECTED) ?
 		ESPINUDP_WITH_NON_ESP : 0;
 
-	u_int proto;
+	unsigned proto;
 	struct ipsec_proto_info *proto_info;
 
 	if (st->st_esp.present) {
@@ -855,12 +855,18 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 		return FALSE;
 	}
 
-	struct kernel_sa sa = empty_sa;
+	struct kernel_sa sa = {
+		.nk_dir = dir,
+		.proto = proto,
+		.reqid = c->spd.reqid + 1, /* why is reqid off by one ??? AA_2017 */
+		.natt_type = natt_type,
+	};
+
 	ip_address *new_addr;
-	u_int16_t old_port;
-	u_int16_t new_port;
-	u_int16_t natt_sport = 0;
-	u_int16_t natt_dport = 0;
+	uint16_t old_port;
+	uint16_t new_port;
+	uint16_t natt_sport = 0;
+	uint16_t natt_dport = 0;
 	const ip_address *src, *dst;
 	const ip_subnet *src_client, *dst_client;
 
@@ -936,19 +942,14 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 		}
 	}
 
-	sa.nk_dir = dir;
-	sa.proto = proto;
 	sa.src = src;
 	sa.dst = dst;
 	sa.text_said = text_said;
 	sa.src_client = src_client;
 	sa.dst_client = dst_client;
 
-	sa.reqid = c->spd.reqid + 1; /* why is reqid off by one ??? AA_2017 */
-
 	sa.natt_sport = natt_sport;
 	sa.natt_dport = natt_dport;
-	sa.natt_type = natt_type;
 
 	char reqid_buf[ULTOT_BUF + 32];
 	ipstr_buf ra;
@@ -1033,7 +1034,6 @@ static bool migrate_xfrm_sa(const struct kernel_sa *sa)
 
 static bool netlink_migrate_sa(struct state *st)
 {
-
 	struct kernel_sa sa;
 	char mig_said[SAMIGTOT_BUF];
 
@@ -1253,8 +1253,8 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		 */
 		if (IPPROTO_ICMP == sa->transport_proto ||
 			IPPROTO_ICMPV6 == sa->transport_proto) {
-			u_int16_t icmp_type;
-			u_int16_t icmp_code;
+			uint16_t icmp_type;
+			uint16_t icmp_code;
 
 			icmp_type = ntohs(req.p.sel.sport) >> 8;
 			icmp_code = ntohs(req.p.sel.sport) & 0xFF;
@@ -1324,13 +1324,13 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 			DBG(DBG_KERNEL, DBG_log("netlink: setting IPsec SA replay-window to %d using old-style req",
 				req.p.replay_window));
 		} else {
-			u_int32_t bmp_size = BYTES_FOR_BITS(sa->replay_window +
-				pad_up(sa->replay_window, sizeof(u_int32_t) * BITS_PER_BYTE) );
+			uint32_t bmp_size = BYTES_FOR_BITS(sa->replay_window +
+				pad_up(sa->replay_window, sizeof(uint32_t) * BITS_PER_BYTE) );
 			/* this is where we could fill in sequence numbers for this SA */
 			struct xfrm_replay_state_esn xre = {
 				/* replay_window must be multiple of 8 */
 				.replay_window = sa->replay_window,
-				.bmp_len = bmp_size / sizeof(u_int32_t),
+				.bmp_len = bmp_size / sizeof(uint32_t),
 			};
 			DBG(DBG_KERNEL, DBG_log("netlink: setting IPsec SA replay-window to %" PRIu32 " using xfrm_replay_state_esn",
 				xre.replay_window));
@@ -1344,7 +1344,6 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	}
 
 	if (sa->authkeylen != 0) {
-
 		const char *name = sa->integ->integ_netlink_xfrm_name;
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
@@ -1404,10 +1403,9 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 		req.n.nlmsg_len += attr->rta_len;
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
-
 	} else if (sa->esatype == ET_ESP) {
-
 		const char *name = sa->encrypt->encrypt_netlink_xfrm_name;
+
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
 				"unknown encryption algorithm: %s",
@@ -1930,8 +1928,8 @@ static bool netlink_get(int fd)
 		return TRUE;
 	} else if ((size_t)r < sizeof(rsp.n)) {
 		libreswan_log(
-			"netlink_get read truncated message: %ld bytes; ignore message",
-			(long) r);
+			"netlink_get read truncated message: %zd bytes; ignore message",
+			r);
 		return TRUE;
 	} else if (addr.nl_pid != 0) {
 		/* not for us: ignore */
@@ -2630,8 +2628,8 @@ static bool netlink_bypass_policy(int family, int proto, int port)
 	const char* text = "add port bypass";
 
 	if (proto == IPPROTO_ICMPV6) {
-		u_int16_t icmp_type;
-		u_int16_t icmp_code;
+		uint16_t icmp_type;
+		uint16_t icmp_code;
 
 		icmp_type = port >> 8;
 		icmp_code = port & 0xFF;
@@ -2651,7 +2649,6 @@ static bool netlink_bypass_policy(int family, int proto, int port)
 
 		if (!netlink_policy(&req.n, 1, text))
 			return FALSE;
-
 	} else {
 		req.u.p.sel.dport = htons(port);
 		req.u.p.sel.dport_mask = 0xffff;
@@ -2704,7 +2701,6 @@ static bool netlink_v6holes()
 						ICMP_NEIGHBOR_DISCOVERY);
 		ret &= netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6,
 						ICMP_NEIGHBOR_SOLICITATION);
-
 	}
 
 	return ret;
@@ -2814,6 +2810,46 @@ static err_t netlink_migrate_sa_check(void)
 	}
 }
 
+static bool netlink_poke_ipsec_policy_hole(struct raw_iface *ifp, int fd)
+{
+	struct sadb_x_policy policy;
+	int level, opt;
+
+	zero(&policy);
+	policy.sadb_x_policy_len = sizeof(policy) /
+		IPSEC_PFKEYv2_ALIGN;
+	policy.sadb_x_policy_exttype = SADB_X_EXT_POLICY;
+	policy.sadb_x_policy_type = IPSEC_POLICY_BYPASS;
+	policy.sadb_x_policy_dir = IPSEC_DIR_INBOUND;
+	policy.sadb_x_policy_id = 0;
+
+	if (addrtypeof(&ifp->addr) == AF_INET6) {
+		level = IPPROTO_IPV6;
+		opt = IPV6_IPSEC_POLICY;
+	} else {
+		level = IPPROTO_IP;
+		opt = IP_IPSEC_POLICY;
+	}
+
+	if (setsockopt(fd, level, opt,
+		       &policy, sizeof(policy)) < 0) {
+		LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
+		close(fd);
+		return false;
+	}
+
+	policy.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
+
+	if (setsockopt(fd, level, opt,
+		       &policy, sizeof(policy)) < 0) {
+		LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
+		close(fd);
+		return false;
+	}
+
+	return true;
+}
+
 const struct kernel_ops netkey_kernel_ops = {
 	.kern_name = "netkey",
 	.type = USE_NETKEY,
@@ -2849,4 +2885,5 @@ const struct kernel_ops netkey_kernel_ops = {
 	.overlap_supported = FALSE,
 	.sha2_truncbug_support = TRUE,
 	.v6holes = netlink_v6holes,
+	.poke_ipsec_policy_hole = netlink_poke_ipsec_policy_hole,
 };

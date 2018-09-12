@@ -7,7 +7,7 @@
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
  * Copyright (C) 2016-2017, Andrew Cagney
- * Copyright (C) 2017 Sahana Prasad <sahana.prasad07@gmail.com>
+ * Copyright (C) 2017-2018 Sahana Prasad <sahana.prasad07@gmail.com>
  * Copyright (C) 2017 Vukasin Karadzic <vukasin.karadzic@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -86,7 +86,8 @@ enum keyword_authby {
 	AUTH_NEVER	= 1,
 	AUTH_PSK	= 2,
 	AUTH_RSASIG	= 3,
-	AUTH_NULL	= 4,
+	AUTH_ECDSA      = 4,
+	AUTH_NULL	= 5,
 };
 
 enum keyword_xauthby {
@@ -296,32 +297,32 @@ typedef enum {
 
 enum {
 	DBG_floor_IX = 0,
-	DBG_RAW_IX = DBG_floor_IX,		/* raw packet I/O */
-	DBG_PARSING_IX,		/* show decoding of messages */
-	DBG_EMITTING_IX,	/* show encoding of messages */
-	DBG_CONTROL_IX,		/* control flow within Pluto */
-	DBG_LIFECYCLE_IX,	/* SA lifecycle */
-	DBG_KERNEL_IX,		/* messages with the kernel */
-	DBG_DNS_IX,		/* DNS activity */
-	DBG_OPPO_IX,		/* opportunism */
-	DBG_CONTROLMORE_IX,	/* more detailed debugging */
 
-	DBG_PFKEY_IX,		/* turn on the pfkey library debugging */
-	DBG_NATT_IX,		/* debugging of NAT-traversal */
-	DBG_X509_IX,		/* X.509/pkix verify, cert retrival */
-	DBG_DPD_IX,		/* DPD items */
-	DBG_XAUTH_IX,		/* XAUTH aka PAM */
-	DBG_RETRANSMITS_IX,	/* Retransmitting packets */
-	DBG_OPPOINFO_IX,	/* log various informational things about oppo/%trap-keying */
+	DBG_RAW_IX = DBG_floor_IX,
+	DBG_PARSING_IX,
+	DBG_EMITTING_IX,
+	DBG_CONTROL_IX,
+	DBG_LIFECYCLE_IX,
+	DBG_KERNEL_IX,
+	DBG_DNS_IX,
+	DBG_OPPO_IX,
+	DBG_CONTROLMORE_IX,
+
+	DBG_NATT_IX,
+	DBG_X509_IX,
+	DBG_DPD_IX,
+	DBG_XAUTH_IX,
+	DBG_RETRANSMITS_IX,
+	DBG_OPPOINFO_IX,
 
 	/* below are excluded from debug=all */
-	DBG_CRYPT_IX,		/* high-level encryption/decryption of messages */
-	DBG_CRYPT_LOW_IX,	/* low-level encryption/decryption implementation details */
-	DBG_PRIVATE_IX,		/* displays private information: DANGER! */
-	DBG_PROPOSAL_PARSER_IX,	/* parsing ike=... et.al. */
+	DBG_CRYPT_IX,
+	DBG_CRYPT_LOW_IX,
+	DBG_PRIVATE_IX,
+	DBG_PROPOSAL_PARSER_IX,
 
-	DBG_WHACKWATCH_IX,	/* never let WHACK go */
-	DBG_ADD_PREFIX_IX,	/* add the log+state prefix to debug lines */
+	DBG_WHACKWATCH_IX,
+	DBG_ADD_PREFIX_IX,
 
 	DBG_roof_IX,		/* first unassigned DBG is assigned to IMPAIR! */
 };
@@ -343,7 +344,6 @@ enum {
 #define DBG_DNS		LELEM(DBG_DNS_IX)
 #define DBG_OPPO	LELEM(DBG_OPPO_IX)
 #define DBG_CONTROLMORE	LELEM(DBG_CONTROLMORE_IX)
-#define DBG_PFKEY	LELEM(DBG_PFKEY_IX)
 #define DBG_NATT	LELEM(DBG_NATT_IX)
 #define DBG_X509	LELEM(DBG_X509_IX)
 #define DBG_DPD		LELEM(DBG_DPD_IX)
@@ -371,6 +371,7 @@ enum {
 
 enum {
 	IMPAIR_floor_IX = DBG_roof_IX,
+
 	IMPAIR_BUST_MI2_IX = IMPAIR_floor_IX,
 	IMPAIR_BUST_MR2_IX,
 	IMPAIR_DROP_I2_IX,
@@ -388,7 +389,11 @@ enum {
 
 	IMPAIR_SEND_BOGUS_PAYLOAD_FLAG_IX,
 	IMPAIR_SEND_BOGUS_ISAKMP_FLAG_IX,
-	IMPAIR_SEND_IKEv2_KE_IX,
+
+	IMPAIR_SEND_NO_KE_PAYLOAD_IX,
+	IMPAIR_SEND_EMPTY_KE_PAYLOAD_IX,
+	IMPAIR_SEND_ZERO_KE_PAYLOAD_IX,
+
 	IMPAIR_SEND_NO_DELETE_IX,
 	IMPAIR_SEND_NO_IKEV2_AUTH_IX,
 	IMPAIR_SEND_NO_XAUTH_R0_IX,
@@ -396,7 +401,6 @@ enum {
 	IMPAIR_SEND_NO_MAIN_R2_IX,
 	IMPAIR_FORCE_FIPS_IX,
 	IMPAIR_SEND_KEY_SIZE_CHECK_IX,
-	IMPAIR_SEND_ZERO_GX_IX,
 	IMPAIR_SEND_BOGUS_DCOOKIE_IX,
 	IMPAIR_OMIT_HASH_NOTIFY_REQUEST_IX,
 	IMPAIR_IGNORE_HASH_NOTIFY_REQUEST_IX,
@@ -447,7 +451,11 @@ enum {
 
 #define IMPAIR_SEND_BOGUS_PAYLOAD_FLAG	LELEM(IMPAIR_SEND_BOGUS_PAYLOAD_FLAG_IX)
 #define IMPAIR_SEND_BOGUS_ISAKMP_FLAG	LELEM(IMPAIR_SEND_BOGUS_ISAKMP_FLAG_IX)
-#define IMPAIR_SEND_IKEv2_KE	LELEM(IMPAIR_SEND_IKEv2_KE_IX)
+
+#define IMPAIR_SEND_NO_KE_PAYLOAD	LELEM(IMPAIR_SEND_NO_KE_PAYLOAD_IX)
+#define IMPAIR_SEND_EMPTY_KE_PAYLOAD	LELEM(IMPAIR_SEND_EMPTY_KE_PAYLOAD_IX)
+#define IMPAIR_SEND_ZERO_KE_PAYLOAD	LELEM(IMPAIR_SEND_ZERO_KE_PAYLOAD_IX)
+
 #define IMPAIR_SEND_NO_DELETE	LELEM(IMPAIR_SEND_NO_DELETE_IX)
 #define IMPAIR_SEND_NO_IKEV2_AUTH	LELEM(IMPAIR_SEND_NO_IKEV2_AUTH_IX)
 #define IMPAIR_SEND_NO_XAUTH_R0	LELEM(IMPAIR_SEND_NO_XAUTH_R0_IX)
@@ -455,7 +463,6 @@ enum {
 #define IMPAIR_SEND_NO_MAIN_R2	LELEM(IMPAIR_SEND_NO_MAIN_R2_IX)
 #define IMPAIR_FORCE_FIPS	LELEM(IMPAIR_FORCE_FIPS_IX)
 #define IMPAIR_SEND_KEY_SIZE_CHECK	LELEM(IMPAIR_SEND_KEY_SIZE_CHECK_IX)
-#define IMPAIR_SEND_ZERO_GX	LELEM(IMPAIR_SEND_ZERO_GX_IX)
 #define IMPAIR_SEND_BOGUS_DCOOKIE	LELEM(IMPAIR_SEND_BOGUS_DCOOKIE_IX)
 #define IMPAIR_OMIT_HASH_NOTIFY_REQUEST		LELEM(IMPAIR_OMIT_HASH_NOTIFY_REQUEST_IX)
 #define IMPAIR_IGNORE_HASH_NOTIFY_REQUEST	LELEM(IMPAIR_IGNORE_HASH_NOTIFY_REQUEST_IX)
@@ -714,9 +721,9 @@ enum sa_role {
 #define IS_ISAKMP_ENCRYPTED(s) ((LELEM(s) & ISAKMP_ENCRYPTED_STATES) != LEMPTY)
 
 /* ??? Is this really authenticate?  Even in xauth case? In STATE_INFO case? */
-#define IS_ISAKMP_AUTHENTICATED(s) (STATE_MAIN_R3 <= (s) \
-				    && STATE_AGGR_R0 != (s) \
-				    && STATE_AGGR_I1 != (s))
+#define IS_ISAKMP_AUTHENTICATED(s) (STATE_MAIN_R3 <= (s) && \
+				    STATE_AGGR_R0 != (s) && \
+				    STATE_AGGR_I1 != (s))
 
 #define IKEV2_ISAKMP_INITIATOR_STATES (LELEM(STATE_PARENT_I0) |	\
 				       LELEM(STATE_PARENT_I1) |	\
@@ -778,15 +785,15 @@ enum sa_role {
       IS_CHILD_SA(st))
 
 #define IS_PARENT_SA_ESTABLISHED(st) \
-    ((st->st_state == STATE_PARENT_I3 || st->st_state == STATE_PARENT_R2) \
-	&& !IS_CHILD_SA(st))
+    (((st)->st_state == STATE_PARENT_I3 || (st)->st_state == STATE_PARENT_R2) && \
+    !IS_CHILD_SA(st))
 
 #define IS_CHILD_SA(st)  ((st)->st_clonedfrom != SOS_NOBODY)
 
 #define IS_PARENT_SA(st) (!IS_CHILD_SA(st))
 
-#define IS_IKE_SA(st) ( (st->st_clonedfrom == SOS_NOBODY) &&  (IS_PHASE1(st->st_state) || IS_PHASE15(st->st_state) || \
-		IS_PARENT_SA(st)) )
+#define IS_IKE_SA(st) ( ((st)->st_clonedfrom == SOS_NOBODY) && \
+	(IS_PHASE1((st)->st_state) || IS_PHASE15((st)->st_state) || IS_PARENT_SA(st)) )
 
 #define IS_CHILD_SA_INITIATOR(st) \
 	((st)->st_state == STATE_V2_CREATE_I0 || \
@@ -923,6 +930,7 @@ enum sa_policy_bits {
 	 */
 	POLICY_PSK_IX = 0,
 	POLICY_RSASIG_IX = 1,
+	POLICY_ECDSA_IX = 2,
 	POLICY_AUTH_NEVER_IX,
 	POLICY_AUTH_NULL_IX,
 
@@ -1013,6 +1021,7 @@ enum sa_policy_bits {
 
 #define POLICY_PSK	LELEM(POLICY_PSK_IX)
 #define POLICY_RSASIG	LELEM(POLICY_RSASIG_IX)
+#define POLICY_ECDSA   LELEM(POLICY_ECDSA_IX)
 #define POLICY_AUTH_NEVER	LELEM(POLICY_AUTH_NEVER_IX)
 #define POLICY_AUTH_NULL LELEM(POLICY_AUTH_NULL_IX)
 #define POLICY_ENCRYPT	LELEM(POLICY_ENCRYPT_IX)	/* must be first of IPSEC policies */
@@ -1126,6 +1135,7 @@ enum PrivateKeyKind {
 	PKK_RSA,
 	PKK_XAUTH,
 	PKK_PPK,
+	PKK_ECDSA, /* should not be needed */
 	PKK_NULL,
 };
 

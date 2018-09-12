@@ -36,7 +36,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/time.h> /* for gettimeofday */
 #include <resolv.h>
 
 #include <libreswan.h>
@@ -143,17 +142,16 @@ void main_outI1(int whack_sock,
 	/* HDR out */
 	pb_stream rbody;
 	{
-		struct isakmp_hdr hdr;
-
-		zero(&hdr);	/* OK: no pointer fields */
-		hdr.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
-			ISAKMP_MINOR_VERSION;
-		hdr.isa_np = ISAKMP_NEXT_SA;
-		hdr.isa_xchg = ISAKMP_XCHG_IDPROT;
+		struct isakmp_hdr hdr = {
+			.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
+				ISAKMP_MINOR_VERSION,
+			.isa_np = ISAKMP_NEXT_SA,
+			.isa_xchg = ISAKMP_XCHG_IDPROT,
+		};
 		memcpy(hdr.isa_icookie, st->st_icookie, COOKIE_SIZE);
 		/* R-cookie, flags and MessageID are left zero */
 
-		if (DBGP(IMPAIR_SEND_BOGUS_ISAKMP_FLAG)) {
+		if (IMPAIR(SEND_BOGUS_ISAKMP_FLAG)) {
 			hdr.isa_flags |= ISAKMP_FLAGS_RESERVED_BIT6;
 		}
 
@@ -254,9 +252,8 @@ static void main_mode_hash_body(struct state *st,
 	}
 
 	DBG(DBG_CRYPT,
-		DBG_log("hashing %lu bytes of SA",
-			(unsigned long) (st->st_p1isa.len -
-					sizeof(struct isakmp_generic))));
+		DBG_log("hashing %zu bytes of SA",
+			st->st_p1isa.len - sizeof(struct isakmp_generic)));
 
 	/* SA_b */
 	hmac_update(ctx, st->st_p1isa.ptr + sizeof(struct isakmp_generic),
@@ -313,7 +310,7 @@ size_t RSA_sign_hash(const struct connection *c,
 	passert(RSA_MIN_OCTETS <= sz &&
 		4 + hash_len < sz &&
 		sz <= RSA_MAX_OCTETS);
-	shr = sign_hash(k, hash_val, hash_len, sig_val, sz, 0 /* for ikev2 only */);
+	shr = sign_hash_RSA(k, hash_val, hash_len, sig_val, sz, 0 /* for ikev2 only */);
 	passert(shr == 0 || (int)sz == shr);
 	return shr;
 }
@@ -414,7 +411,7 @@ notification_t accept_v1_nonce(struct msg_digest *md, chunk_t *dest,
 bool ikev1_encrypt_message(pb_stream *pbs, struct state *st)
 {
 	const struct encrypt_desc *e = st->st_oakley.ta_encrypt;
-	u_int8_t *enc_start = pbs->start + sizeof(struct isakmp_hdr);
+	uint8_t *enc_start = pbs->start + sizeof(struct isakmp_hdr);
 	size_t enc_len = pbs_offset(pbs) - sizeof(struct isakmp_hdr);
 
 	DBG_cond_dump(DBG_CRYPT | DBG_RAW, "encrypting:", enc_start,
@@ -480,21 +477,21 @@ bool ikev1_encrypt_message(pb_stream *pbs, struct state *st)
  *
  * @param pbs PB Stream
  */
-bool ikev1_close_message(pb_stream *pbs, struct state *st)
+bool ikev1_close_message(pb_stream *pbs, const struct state *st)
 {
 	passert(!st->st_ikev2);
 	size_t padding = pad_up(pbs_offset(pbs), 4);
 
-	if (padding != 0 && st != NULL && st->st_connection != NULL &&
-	    (st->st_connection->policy & POLICY_NO_IKEPAD)) {
+	if (padding == 0) {
+		DBG(DBG_CONTROLMORE, DBG_log("no IKEv1 message padding required"));
+	} else if (pexpect(st != NULL) && pexpect(st->st_connection != NULL) &&
+		   (st->st_connection->policy & POLICY_NO_IKEPAD)) {
 		DBG(DBG_CONTROLMORE, DBG_log("IKEv1 message padding of %zu bytes skipped by policy",
 			padding));
-	} else if (padding != 0) {
+	} else {
 		DBG(DBG_CONTROLMORE, DBG_log("padding IKEv1 message with %zu bytes", padding));
 		if (!out_zero(padding, pbs, "message padding"))
 			return FALSE;
-	} else {
-		DBG(DBG_CONTROLMORE, DBG_log("no IKEv1 message padding required"));
 	}
 
 	close_output_pbs(pbs);
@@ -720,7 +717,7 @@ stf_status main_inI1_outR1(struct state *st, struct msg_digest *md)
 		memcpy(hdr.isa_rcookie, st->st_rcookie, COOKIE_SIZE);
 		hdr.isa_np = ISAKMP_NEXT_SA;
 
-		if (DBGP(IMPAIR_SEND_BOGUS_ISAKMP_FLAG)) {
+		if (IMPAIR(SEND_BOGUS_ISAKMP_FLAG)) {
 			hdr.isa_flags |= ISAKMP_FLAGS_RESERVED_BIT6;
 		}
 
@@ -732,8 +729,8 @@ stf_status main_inI1_outR1(struct state *st, struct msg_digest *md)
 	/* start of SA out */
 	{
 		struct isakmp_sa r_sa = {
-			.isasa_doi = ISAKMP_DOI_IPSEC,
 			.isasa_np = ISAKMP_NEXT_VID,
+			.isasa_doi = ISAKMP_DOI_IPSEC,
 		};
 		if (!out_struct(&r_sa, &isakmp_sa_desc, &rbody, &r_sa_pbs))
 			return STF_INTERNAL_ERROR;
@@ -794,7 +791,7 @@ static void main_inR1_outI2_continue(struct state *st,
 
 stf_status main_inR1_outI2(struct state *st, struct msg_digest *md)
 {
-	if (cur_debugging & IMPAIR_DROP_I2) {
+	if (IMPAIR(DROP_I2)) {
 		DBG(DBG_CONTROL, DBG_log("dropping Main Mode I2 packet as per impair"));
 		return STF_IGNORE;
 	}
@@ -830,16 +827,23 @@ stf_status main_inR1_outI2(struct state *st, struct msg_digest *md)
  * used by IKEv1: main, aggressive, and quick (in PFS mode).
  */
 bool ikev1_justship_KE(chunk_t *g,
-		pb_stream *outs, u_int8_t np)
+		pb_stream *outs, uint8_t np)
 {
-	if (DBGP(IMPAIR_SEND_ZERO_GX)) {
+	if (IMPAIR(SEND_NO_KE_PAYLOAD)) {
+		libreswan_log("IMPAIR: sending no KE (g^x) payload");
+		return true;
+	} else if (IMPAIR(SEND_ZERO_KE_PAYLOAD)) {
 		pb_stream z;
 
-		libreswan_log("sending bogus g^x == 0 value to break DH calculations because impair-send-zero-gx was set");
+		libreswan_log("IMPAIR: sending bogus KE (g^x) == 0 value to break DH calculations");
 		/* Only used to test sending/receiving bogus g^x */
 		return ikev1_out_generic(np, &isakmp_keyex_desc, outs, &z) &&
 			out_zero(g->len, &z, "fake g^x") &&
 			(close_output_pbs(&z), TRUE);
+	} else if (IMPAIR(SEND_EMPTY_KE_PAYLOAD)) {
+		libreswan_log("IMPAIR: sending empty KE (g^x)");
+		return ikev1_out_generic_chunk(0, &isakmp_keyex_desc, outs,
+					       empty_chunk, "empty KE");
 	} else {
 		return ikev1_out_generic_chunk(np, &isakmp_keyex_desc, outs, *g,
 				"keyex value");
@@ -849,7 +853,7 @@ bool ikev1_justship_KE(chunk_t *g,
 bool ikev1_ship_KE(struct state *st,
 	struct pluto_crypto_req *r,
 	chunk_t *g,
-	pb_stream *outs, u_int8_t np)
+	pb_stream *outs, uint8_t np)
 {
 	unpack_KE_from_helper(st, r, g);
 	return ikev1_justship_KE(g, outs, np);
@@ -875,7 +879,7 @@ static stf_status main_inR1_outI2_tail(struct state *st, struct msg_digest *md,
 	 * depends on the type of Auth (eventually).
 	 */
 	pb_stream rbody;
-	ikev1_init_out_pbs_echo_hdr(md, FALSE, ISAKMP_NEXT_KE,
+	ikev1_init_out_pbs_echo_hdr(md, FALSE, 0/*auto-set NP*/,
 				    &reply_stream, reply_buffer, sizeof(reply_buffer),
 				    &rbody);
 
@@ -886,13 +890,12 @@ static stf_status main_inR1_outI2_tail(struct state *st, struct msg_digest *md,
 
 	/* Ni out */
 	if (!ikev1_ship_nonce(&st->st_ni, r, &rbody,
-				(cur_debugging &
-					IMPAIR_BUST_MI2) ? ISAKMP_NEXT_VID :
-				ISAKMP_NEXT_NONE,
-				"Ni"))
+			(IMPAIR(BUST_MI2)) ?
+				ISAKMP_NEXT_VID : ISAKMP_NEXT_NONE,
+			"Ni"))
 		return STF_INTERNAL_ERROR;
 
-	if (cur_debugging & IMPAIR_BUST_MI2) {
+	if (IMPAIR(BUST_MI2)) {
 		/*
 		 * generate a pointless large VID payload to push message
 		 * over MTU
@@ -900,9 +903,8 @@ static stf_status main_inR1_outI2_tail(struct state *st, struct msg_digest *md,
 		pb_stream vid_pbs;
 
 		/*
-		 * This next payload value will get rewritten to one of the two
-		 * NAT payload types when needed, using out_modify_previous_np()
-		 * in the below call to ikev1_nat_traversal_add_natd()
+		 * This next payload value will get rewritten
+		 * if ikev1_nat_traversal_add_natd is called.
 		 */
 		if (!ikev1_out_generic(ISAKMP_NEXT_NONE, &isakmp_vendor_id_desc,
 					&rbody,
@@ -1042,7 +1044,7 @@ stf_status main_inI2_outR2_continue1_tail(struct state *st, struct msg_digest *m
 
 	/* HDR out */
 	pb_stream rbody;
-	ikev1_init_out_pbs_echo_hdr(md, FALSE, ISAKMP_NEXT_KE,
+	ikev1_init_out_pbs_echo_hdr(md, FALSE, 0/*auto-set NP*/,
 				    &reply_stream, reply_buffer, sizeof(reply_buffer),
 				    &rbody);
 
@@ -1055,7 +1057,7 @@ stf_status main_inI2_outR2_continue1_tail(struct state *st, struct msg_digest *m
 		int next_payload;
 		next_payload = ISAKMP_NEXT_NONE;
 
-		if (cur_debugging & IMPAIR_BUST_MR2)
+		if (IMPAIR(BUST_MR2))
 			next_payload = ISAKMP_NEXT_VID;
 		if (send_cr)
 			next_payload = ISAKMP_NEXT_CR;
@@ -1065,7 +1067,7 @@ stf_status main_inI2_outR2_continue1_tail(struct state *st, struct msg_digest *m
 					"Nr"))
 			return STF_INTERNAL_ERROR;
 
-		if (cur_debugging & IMPAIR_BUST_MR2) {
+		if (IMPAIR(BUST_MR2)) {
 			/*
 			 * generate a pointless large VID payload to push
 			 * message over MTU
@@ -1202,6 +1204,11 @@ static stf_status main_inR2_outI3_continue_tail(struct msg_digest *md,
 	bool send_authcerts = (send_cert &&
 			  c->send_ca != CA_SEND_NONE);
 
+	/*****
+	 * From here on, if send_authcerts, we are obligated to:
+	 * free_auth_chain(auth_chain, chain_len);
+	 *****/
+
 	chunk_t auth_chain[MAX_CA_PATH_LEN] = { { NULL, 0 } };
 	int chain_len = 0;
 
@@ -1273,7 +1280,7 @@ static stf_status main_inR2_outI3_continue_tail(struct msg_digest *md,
 		struct isakmp_ipsec_id id_hd;
 		chunk_t id_b;
 
-		build_id_payload(&id_hd, &id_b, &c->spd.this, FALSE);
+		build_id_payload(&id_hd, &id_b, &c->spd.this);
 		id_hd.isaiid_np =
 			send_cert ? ISAKMP_NEXT_CERT : auth_payload;
 		if (!out_struct(&id_hd,
@@ -1295,12 +1302,14 @@ static stf_status main_inR2_outI3_continue_tail(struct msg_digest *md,
 			send_cr ? ISAKMP_NEXT_CR : ISAKMP_NEXT_SIG;
 		SECItem *pkcs7 = nss_pkcs7_blob(mycert.u.nss_cert, send_authcerts);
 		if (!pexpect(pkcs7 != NULL)) {
+			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 		if (!ikev1_ship_CERT(CERT_PKCS7_WRAPPED_X509,
 				     same_secitem_as_chunk(*pkcs7),
 				     rbody, np)) {
 			SECITEM_FreeItem(pkcs7, PR_TRUE);
+			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 	} else if (send_cert) {
@@ -1331,8 +1340,11 @@ static stf_status main_inR2_outI3_continue_tail(struct msg_digest *md,
 				return STF_INTERNAL_ERROR;
 			}
 		}
-		free_auth_chain(auth_chain, chain_len);
 	}
+
+	free_auth_chain(auth_chain, chain_len);
+
+	/***** obligation to free_auth_chain has been discharged *****/
 
 	/* CR out */
 	if (send_cr) {
@@ -1383,24 +1395,21 @@ static stf_status main_inR2_outI3_continue_tail(struct msg_digest *md,
 	/* INITIAL_CONTACT */
 	if (initial_contact) {
 		pb_stream notify_pbs;
-		struct isakmp_notification isan;
+		struct isakmp_notification isan = {
+			.isan_np = ISAKMP_NEXT_NONE,
+			.isan_doi = ISAKMP_DOI_IPSEC,
+			.isan_protoid = PROTO_ISAKMP,
+			.isan_spisize = COOKIE_SIZE * 2,
+			.isan_type = IPSEC_INITIAL_CONTACT,
+		};
 
 		libreswan_log("sending INITIAL_CONTACT");
 
-		isan.isan_np = ISAKMP_NEXT_NONE;
-		isan.isan_doi = ISAKMP_DOI_IPSEC;
-		isan.isan_protoid = PROTO_ISAKMP;
-		isan.isan_spisize = COOKIE_SIZE * 2;
-		isan.isan_type = IPSEC_INITIAL_CONTACT;
 		if (!out_struct(&isan, &isakmp_notification_desc, rbody,
-					&notify_pbs))
-			return STF_INTERNAL_ERROR;
-
-		if (!out_raw(st->st_icookie, COOKIE_SIZE, &notify_pbs,
-				"notify icookie"))
-			return STF_INTERNAL_ERROR;
-
-		if (!out_raw(st->st_rcookie, COOKIE_SIZE, &notify_pbs,
+					&notify_pbs) ||
+		    !out_raw(st->st_icookie, COOKIE_SIZE, &notify_pbs,
+				"notify icookie") ||
+		    !out_raw(st->st_rcookie, COOKIE_SIZE, &notify_pbs,
 				"notify rcookie"))
 			return STF_INTERNAL_ERROR;
 
@@ -1496,7 +1505,7 @@ stf_status oakley_id_and_auth(struct msg_digest *md, bool initiator,
 	 */
 	{
 		pb_stream *idpl = &md->chain[ISAKMP_NEXT_ID]->pbs;
-		u_int8_t *old_cur = idpl->cur;
+		uint8_t *old_cur = idpl->cur;
 
 		idpl->cur = idpl->roof;
 		hash_len = main_mode_hash(st, hash_val, !initiator, idpl);
@@ -1577,6 +1586,11 @@ stf_status main_inI3_outR3(struct state *st, struct msg_digest *md)
 	bool send_authcerts = (send_cert &&
 			  c->send_ca != CA_SEND_NONE);
 
+	/*****
+	 * From here on, if send_authcerts, we are obligated to:
+	 * free_auth_chain(auth_chain, chain_len);
+	 *****/
+
 	chunk_t auth_chain[MAX_CA_PATH_LEN] = { { NULL, 0 } };
 	int chain_len = 0;
 
@@ -1630,12 +1644,12 @@ stf_status main_inI3_outR3(struct state *st, struct msg_digest *md)
 		struct isakmp_ipsec_id id_hd;
 		chunk_t id_b;
 
-		build_id_payload(&id_hd, &id_b, &c->spd.this, FALSE);
+		build_id_payload(&id_hd, &id_b, &c->spd.this);
 		id_hd.isaiid_np =
 			send_cert ? ISAKMP_NEXT_CERT : auth_payload;
 		if (!out_struct(&id_hd, &isakmp_ipsec_identification_desc,
 					&rbody, &r_id_pbs) ||
-			!out_chunk(id_b, &r_id_pbs, "my identity")) {
+		    !out_chunk(id_b, &r_id_pbs, "my identity")) {
 			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
@@ -1648,12 +1662,14 @@ stf_status main_inI3_outR3(struct state *st, struct msg_digest *md)
 		libreswan_log("IMPAIR: sending cert as pkcs7 blob");
 		SECItem *pkcs7 = nss_pkcs7_blob(mycert.u.nss_cert, send_authcerts);
 		if (!pexpect(pkcs7 != NULL)) {
+			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 		if (!ikev1_ship_CERT(CERT_PKCS7_WRAPPED_X509,
 				     same_secitem_as_chunk(*pkcs7),
 				     &rbody, ISAKMP_NEXT_SIG)) {
 			SECITEM_FreeItem(pkcs7, PR_TRUE);
+			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 	} else if (send_cert) {
@@ -1678,8 +1694,11 @@ stf_status main_inI3_outR3(struct state *st, struct msg_digest *md)
 				return STF_INTERNAL_ERROR;
 			}
 		}
-		free_auth_chain(auth_chain, chain_len);
 	}
+
+	free_auth_chain(auth_chain, chain_len);
+
+	/***** obligation to free_auth_chain has been discharged *****/
 
 	/* IKEv2 NOTIFY payload */
 
@@ -1768,14 +1787,7 @@ stf_status main_inI3_outR3(struct state *st, struct msg_digest *md)
  *
  */
 
-static ikev1_state_transition_fn main_inR3_tail;
-
 stf_status main_inR3(struct state *st, struct msg_digest *md)
-{
-	return main_inR3_tail(st, md);
-}
-
-static stf_status main_inR3_tail(struct state *st, struct msg_digest *md)
 {
 	/*
 	 * ID and HASH_R or SIG_R in
@@ -1852,7 +1864,7 @@ static stf_status main_inR3_tail(struct state *st, struct msg_digest *md)
 }
 
 stf_status send_isakmp_notification(struct state *st,
-				u_int16_t type, const void *data,
+				uint16_t type, const void *data,
 				size_t len)
 {
 	msgid_t msgid;
@@ -1868,13 +1880,14 @@ stf_status send_isakmp_notification(struct state *st,
 
 	/* HDR* */
 	{
-		struct isakmp_hdr hdr;
-		hdr.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
-			ISAKMP_MINOR_VERSION;
-		hdr.isa_np = ISAKMP_NEXT_HASH;
-		hdr.isa_xchg = ISAKMP_XCHG_INFO;
-		hdr.isa_msgid = msgid;
-		hdr.isa_flags = ISAKMP_FLAGS_v1_ENCRYPTION;
+		struct isakmp_hdr hdr = {
+			.isa_np = ISAKMP_NEXT_HASH,
+			.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
+				ISAKMP_MINOR_VERSION,
+			.isa_xchg = ISAKMP_XCHG_INFO,
+			.isa_flags = ISAKMP_FLAGS_v1_ENCRYPTION,
+			.isa_msgid = msgid,
+		};
 		memcpy(hdr.isa_icookie, st->st_icookie, COOKIE_SIZE);
 		memcpy(hdr.isa_rcookie, st->st_rcookie, COOKIE_SIZE);
 		passert(out_struct(&hdr, &isakmp_hdr_desc, &reply_stream, &rbody));
@@ -1885,22 +1898,18 @@ stf_status send_isakmp_notification(struct state *st,
 	/* NOTIFY */
 	{
 		pb_stream notify_pbs;
-		struct isakmp_notification isan;
-
-		isan.isan_np = ISAKMP_NEXT_NONE;
-		isan.isan_doi = ISAKMP_DOI_IPSEC;
-		isan.isan_protoid = PROTO_ISAKMP;
-		isan.isan_spisize = COOKIE_SIZE * 2;
-		isan.isan_type = type;
+		struct isakmp_notification isan = {
+			.isan_np = ISAKMP_NEXT_NONE,
+			.isan_doi = ISAKMP_DOI_IPSEC,
+			.isan_protoid = PROTO_ISAKMP,
+			.isan_spisize = COOKIE_SIZE * 2,
+			.isan_type = type,
+		};
 		if (!out_struct(&isan, &isakmp_notification_desc, &rbody,
-					&notify_pbs))
-			return STF_INTERNAL_ERROR;
-
-		if (!out_raw(st->st_icookie, COOKIE_SIZE, &notify_pbs,
-				"notify icookie"))
-			return STF_INTERNAL_ERROR;
-
-		if (!out_raw(st->st_rcookie, COOKIE_SIZE, &notify_pbs,
+					&notify_pbs) ||
+		    !out_raw(st->st_icookie, COOKIE_SIZE, &notify_pbs,
+				"notify icookie") ||
+		    !out_raw(st->st_rcookie, COOKIE_SIZE, &notify_pbs,
 				"notify rcookie"))
 			return STF_INTERNAL_ERROR;
 
@@ -1976,7 +1985,6 @@ static void send_notification(struct state *sndst, notification_t type,
 	u_char *r_hashval, *r_hash_start;
 	static monotime_t last_malformed;
 	monotime_t n = mononow();
-	struct isakmp_hdr hdr; /* keep it around for TPM */
 
 	r_hashval = NULL;
 	r_hash_start = NULL;
@@ -2049,15 +2057,18 @@ static void send_notification(struct state *sndst, notification_t type,
 
 	/* HDR* */
 	{
-		hdr.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
-			ISAKMP_MINOR_VERSION;
-		hdr.isa_np = encst ? ISAKMP_NEXT_HASH : ISAKMP_NEXT_N;
-		hdr.isa_xchg = ISAKMP_XCHG_INFO;
-		hdr.isa_msgid = msgid;
-		hdr.isa_flags = encst ? ISAKMP_FLAGS_v1_ENCRYPTION : 0;
-		if (icookie)
+		/* ??? "keep it around for TPM" */
+		struct isakmp_hdr hdr = {
+			.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
+				ISAKMP_MINOR_VERSION,
+			.isa_np = encst ? ISAKMP_NEXT_HASH : ISAKMP_NEXT_N,
+			.isa_xchg = ISAKMP_XCHG_INFO,
+			.isa_msgid = msgid,
+			.isa_flags = encst ? ISAKMP_FLAGS_v1_ENCRYPTION : 0,
+		};
+		if (icookie != NULL)
 			memcpy(hdr.isa_icookie, icookie, COOKIE_SIZE);
-		if (rcookie)
+		if (rcookie != NULL)
 			memcpy(hdr.isa_rcookie, rcookie, COOKIE_SIZE);
 		passert(out_struct(&hdr, &isakmp_hdr_desc, &pbs, &r_hdr_pbs));
 	}
@@ -2077,13 +2088,13 @@ static void send_notification(struct state *sndst, notification_t type,
 	/* Notification Payload */
 	{
 		pb_stream not_pbs;
-		struct isakmp_notification isan;
-
-		isan.isan_doi = ISAKMP_DOI_IPSEC;
-		isan.isan_np = ISAKMP_NEXT_NONE;
-		isan.isan_type = type;
-		isan.isan_spisize = 0;
-		isan.isan_protoid = protoid;
+		struct isakmp_notification isan = {
+			.isan_doi = ISAKMP_DOI_IPSEC,
+			.isan_np = ISAKMP_NEXT_NONE,
+			.isan_type = type,
+			.isan_spisize = 0,
+			.isan_protoid = protoid,
+		};
 
 		if (!out_struct(&isan, &isakmp_notification_desc,
 					&r_hdr_pbs, &not_pbs)) {
@@ -2115,7 +2126,7 @@ static void send_notification(struct state *sndst, notification_t type,
 		/* Encrypt message (preserve st_iv) */
 		/* ??? why not preserve st_new_iv? */
 		u_char old_iv[MAX_DIGEST_LEN];
-		u_int old_iv_len;
+		unsigned old_iv_len;
 
 		save_iv(encst, old_iv, old_iv_len);
 
@@ -2229,7 +2240,6 @@ void send_v1_delete(struct state *st)
 		*r_hashval, /* where in reply to jam hash value */
 		*r_hash_start; /* start of what is to be hashed */
 	bool isakmp_sa = FALSE;
-	struct isakmp_hdr hdr;
 
 	/* If there are IPsec SA's related to this state struct... */
 	if (IS_IPSEC_SA_ESTABLISHED(st)) {
@@ -2269,12 +2279,14 @@ void send_v1_delete(struct state *st)
 
 	/* HDR* */
 	{
-		hdr.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
-			ISAKMP_MINOR_VERSION;
-		hdr.isa_np = ISAKMP_NEXT_HASH;
-		hdr.isa_xchg = ISAKMP_XCHG_INFO;
-		hdr.isa_msgid = msgid;
-		hdr.isa_flags = ISAKMP_FLAGS_v1_ENCRYPTION;
+		struct isakmp_hdr hdr = {
+			.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
+				ISAKMP_MINOR_VERSION,
+			.isa_np = ISAKMP_NEXT_HASH,
+			.isa_xchg = ISAKMP_XCHG_INFO,
+			.isa_msgid = msgid,
+			.isa_flags = ISAKMP_FLAGS_v1_ENCRYPTION,
+		};
 		memcpy(hdr.isa_icookie, p1st->st_icookie, COOKIE_SIZE);
 		memcpy(hdr.isa_rcookie, p1st->st_rcookie, COOKIE_SIZE);
 		passert(out_struct(&hdr, &isakmp_hdr_desc, &reply_pbs,
@@ -2297,14 +2309,14 @@ void send_v1_delete(struct state *st)
 	/* Delete Payloads */
 	if (isakmp_sa) {
 		pb_stream del_pbs;
-		struct isakmp_delete isad;
+		struct isakmp_delete isad = {
+			.isad_doi = ISAKMP_DOI_IPSEC,
+			.isad_np = ISAKMP_NEXT_NONE,
+			.isad_spisize = (2 * COOKIE_SIZE),
+			.isad_protoid = PROTO_ISAKMP,
+			.isad_nospi = 1,
+		};
 		u_char isakmp_spi[2 * COOKIE_SIZE];
-
-		isad.isad_doi = ISAKMP_DOI_IPSEC;
-		isad.isad_np = ISAKMP_NEXT_NONE;
-		isad.isad_spisize = (2 * COOKIE_SIZE);
-		isad.isad_protoid = PROTO_ISAKMP;
-		isad.isad_nospi = 1;
 
 		memcpy(isakmp_spi, st->st_icookie, COOKIE_SIZE);
 		memcpy(isakmp_spi + COOKIE_SIZE, st->st_rcookie, COOKIE_SIZE);
@@ -2316,18 +2328,16 @@ void send_v1_delete(struct state *st)
 		close_output_pbs(&del_pbs);
 	} else {
 		while (ns != said) {
-
 			pb_stream del_pbs;
-			struct isakmp_delete isad;
-
 			ns--;
-			isad.isad_doi = ISAKMP_DOI_IPSEC;
-			isad.isad_np = ns ==
-				said ? ISAKMP_NEXT_NONE : ISAKMP_NEXT_D;
-			isad.isad_spisize = sizeof(ipsec_spi_t);
-			isad.isad_protoid = ns->proto;
-
-			isad.isad_nospi = 1;
+			struct isakmp_delete isad = {
+				.isad_doi = ISAKMP_DOI_IPSEC,
+				.isad_np = ns == said ?
+					ISAKMP_NEXT_NONE : ISAKMP_NEXT_D,
+				.isad_spisize = sizeof(ipsec_spi_t),
+				.isad_protoid = ns->proto,
+				.isad_nospi = 1,
+			};
 			passert(out_struct(&isad, &isakmp_delete_desc, &r_hdr_pbs,
 					   &del_pbs));
 			passert(out_raw(&ns->spi, sizeof(ipsec_spi_t),
@@ -2458,8 +2468,8 @@ bool accept_delete(struct msg_digest *md,
 			/*
 			 * ISAKMP
 			 */
-			u_int8_t icookie[COOKIE_SIZE];
-			u_int8_t rcookie[COOKIE_SIZE];
+			uint8_t icookie[COOKIE_SIZE];
+			uint8_t rcookie[COOKIE_SIZE];
 			struct state *dst;
 
 			if (!in_raw(icookie, COOKIE_SIZE, &p->pbs, "iCookie"))
